@@ -5,30 +5,63 @@
 const DEFAULT_CSV_URL =
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vQWRM7E3rtMsJVWf9z1cntdblP4nSP9p0QCC6DeEbVt_3MHbjicUDgP2AsgLPV-NaNAYH3YZfDwFXhI/pub?output=csv";
 
-
 const STORAGE_URL =
     "cctv_uid_sstb_csv_url";
 
+/*
+ * GOOGLE APPS SCRIPT WEB APP
+ *
+ * Digunakan untuk menyimpan hasil EDIT
+ * kembali ke Google Spreadsheet.
+ */
+const DEFAULT_API_URL =
+    "https://script.google.com/macros/s/AKfycbxiaoLeSUzCCwRTE38__2RDU5NLK-QGi_Y0TDuIE7FAyGGUs_OlEgk3IpDBaqqKwiYt/exec";
+
 
 /* =========================================================
-   STATE
+   VARIABEL GLOBAL
 ========================================================= */
 
 let DATA = [];
 
-let charts = {};
+let currentEditingRow = null;
 
-let currentView = "dashboard";
+let charts = {};
 
 
 /* =========================================================
-   HELPER
+   HELPER DOM
 ========================================================= */
 
 function $(id) {
     return document.getElementById(id);
 }
 
+
+/* =========================================================
+   GET VALUE
+========================================================= */
+
+function getValue(row, key) {
+
+    if (!row) {
+        return "";
+    }
+
+    if (
+        row[key] !== undefined &&
+        row[key] !== null
+    ) {
+        return String(row[key]).trim();
+    }
+
+    return "";
+}
+
+
+/* =========================================================
+   ESCAPE HTML
+========================================================= */
 
 function escapeHTML(value) {
 
@@ -42,126 +75,87 @@ function escapeHTML(value) {
 
 
 /* =========================================================
-   NORMALISASI HEADER
+   ESCAPE ATTRIBUTE
 ========================================================= */
 
-function normalizeHeader(text) {
+function escapeAttribute(value) {
 
-    return String(text ?? "")
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, " ")
-        .replace(/_/g, " ");
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
 }
 
 
 /* =========================================================
-   MENCARI FIELD
+   PARSE TANGGAL
 ========================================================= */
 
-function getField(row, names) {
+function parseDate(value) {
 
-    const keys = Object.keys(row || {});
-
-    for (const name of names) {
-
-        const target = normalizeHeader(name);
-
-        const foundKey = keys.find(
-            key => normalizeHeader(key) === target
-        );
-
-        if (foundKey !== undefined) {
-
-            return String(row[foundKey] ?? "").trim();
-        }
+    if (!value) {
+        return null;
     }
 
-    return "";
-}
+    if (value instanceof Date) {
 
+        return isNaN(value.getTime())
+            ? null
+            : value;
+    }
 
-/* =========================================================
-   PARSE TIMESTAMP
-========================================================= */
+    const text = String(value).trim();
 
-function parseTimestamp(value) {
-
-    if (
-        value === null ||
-        value === undefined ||
-        value === ""
-    ) {
+    if (!text) {
         return null;
     }
 
 
-    /* Excel serial date */
+    /* -----------------------------------------
+       Format ISO / Google Sheets
+    ----------------------------------------- */
 
-    if (
-        typeof value === "number" &&
-        value > 20000 &&
-        value < 60000
-    ) {
+    let date = new Date(text);
 
-        const excelEpoch =
-            new Date(Date.UTC(1899, 11, 30));
-
-        const date =
-            new Date(
-                excelEpoch.getTime() +
-                value * 86400000
-            );
-
+    if (!isNaN(date.getTime())) {
         return date;
     }
 
 
-    let text = String(value).trim();
+    /* -----------------------------------------
+       Format Indonesia
 
-    text = text.replace(
-        /\s+/g,
-        " "
+       dd/mm/yyyy
+       dd/mm/yyyy hh:mm
+       dd/mm/yyyy hh:mm:ss
+    ----------------------------------------- */
+
+    const match = text.match(
+        /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
     );
-
-
-    /*
-        FORMAT:
-
-        2026-09-15 12:42:52
-        2026-09-15T12:42:52
-
-        DD/MM/YYYY 12:42:52
-        DD-MM-YYYY 12:42:52
-    */
-
-
-    let match;
-
-
-    /* YYYY-MM-DD */
-
-    match = text.match(
-        /^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/
-    );
-
 
     if (match) {
 
-        const year = Number(match[1]);
+        const day =
+            Number(match[1]);
 
-        const month = Number(match[2]) - 1;
+        const month =
+            Number(match[2]) - 1;
 
-        const day = Number(match[3]);
+        const year =
+            Number(match[3]);
 
-        const hour = Number(match[4]);
+        const hour =
+            Number(match[4] || 0);
 
-        const minute = Number(match[5]);
+        const minute =
+            Number(match[5] || 0);
 
-        const second = Number(match[6] || 0);
+        const second =
+            Number(match[6] || 0);
 
-
-        return new Date(
+        date = new Date(
             year,
             month,
             day,
@@ -169,74 +163,10 @@ function parseTimestamp(value) {
             minute,
             second
         );
-    }
 
-
-    /* DD/MM/YYYY */
-
-    match = text.match(
-        /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/
-    );
-
-
-    if (match) {
-
-        const day = Number(match[1]);
-
-        const month = Number(match[2]) - 1;
-
-        const year = Number(match[3]);
-
-        const hour = Number(match[4]);
-
-        const minute = Number(match[5]);
-
-        const second = Number(match[6] || 0);
-
-
-        return new Date(
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second
-        );
-    }
-
-
-    /* Hanya tanggal */
-
-    match = text.match(
-        /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/
-    );
-
-
-    if (match) {
-
-        return new Date(
-            Number(match[3]),
-            Number(match[2]) - 1,
-            Number(match[1]),
-            0,
-            0,
-            0
-        );
-    }
-
-
-    /*
-       Fallback
-       hanya jika format memang
-       dapat dibaca browser
-    */
-
-    const fallback =
-        new Date(text);
-
-    if (!isNaN(fallback.getTime())) {
-
-        return fallback;
+        if (!isNaN(date.getTime())) {
+            return date;
+        }
     }
 
 
@@ -245,792 +175,1731 @@ function parseTimestamp(value) {
 
 
 /* =========================================================
-   FORMAT TIMESTAMP
+   FORMAT TANGGAL + JAM
 ========================================================= */
 
-function formatTimestamp(value) {
-
-    const date =
-        value instanceof Date
-            ? value
-            : parseTimestamp(value);
-
+function formatDateTime(date) {
 
     if (!date) {
-
-        return value || "-";
+        return "-";
     }
 
+    const d =
+        date instanceof Date
+            ? date
+            : parseDate(date);
+
+    if (!d || isNaN(d.getTime())) {
+        return String(date);
+    }
 
     const day =
-        String(date.getDate()).padStart(2, "0");
+        String(d.getDate()).padStart(2, "0");
 
     const month =
-        String(date.getMonth() + 1).padStart(2, "0");
+        String(d.getMonth() + 1).padStart(2, "0");
 
     const year =
-        date.getFullYear();
-
+        d.getFullYear();
 
     const hour =
-        String(date.getHours()).padStart(2, "0");
+        String(d.getHours()).padStart(2, "0");
 
     const minute =
-        String(date.getMinutes()).padStart(2, "0");
+        String(d.getMinutes()).padStart(2, "0");
 
     const second =
-        String(date.getSeconds()).padStart(2, "0");
+        String(d.getSeconds()).padStart(2, "0");
 
-
-    return `${day}/${month}/${year} ${hour}:${minute}:${second}`;
+    return (
+        `${day}/${month}/${year} ` +
+        `${hour}:${minute}:${second}`
+    );
 }
 
 
 /* =========================================================
-   NORMALISASI DATA SPREADSHEET
+   FORMAT TANGGAL SAJA
+========================================================= */
+
+function formatDateOnly(date) {
+
+    if (!date) {
+        return "-";
+    }
+
+    const d =
+        date instanceof Date
+            ? date
+            : parseDate(date);
+
+    if (!d || isNaN(d.getTime())) {
+        return "-";
+    }
+
+    const day =
+        String(d.getDate()).padStart(2, "0");
+
+    const month =
+        String(d.getMonth() + 1).padStart(2, "0");
+
+    const year =
+        d.getFullYear();
+
+    return `${day}/${month}/${year}`;
+}
+
+
+/* =========================================================
+   FORMAT DATETIME UNTUK INPUT
+========================================================= */
+
+function formatDateForInput(value) {
+
+    if (!value) {
+        return "";
+    }
+
+    const date =
+        parseDate(value);
+
+    if (!date) {
+        return "";
+    }
+
+    const year =
+        date.getFullYear();
+
+    const month =
+        String(date.getMonth() + 1)
+            .padStart(2, "0");
+
+    const day =
+        String(date.getDate())
+            .padStart(2, "0");
+
+    const hour =
+        String(date.getHours())
+            .padStart(2, "0");
+
+    const minute =
+        String(date.getMinutes())
+            .padStart(2, "0");
+
+    return (
+        `${year}-${month}-${day}` +
+        `T${hour}:${minute}`
+    );
+}
+
+
+/* =========================================================
+   NORMALISASI DATA
 ========================================================= */
 
 function normalizeRow(row) {
 
+    /* -----------------------------------------
+       DATA UTAMA
+    ----------------------------------------- */
+
     const timestamp =
-        getField(row, [
+        getValue(
+            row,
             "Timestamp"
-        ]);
+        );
+
+    const dateObject =
+        parseDate(timestamp);
 
 
     const up3 =
-        getField(row, [
+        getValue(
+            row,
             "Unit UP3"
-        ]);
+        );
 
 
     const ulp =
-        getField(row, [
+        getValue(
+            row,
             "Unit ULP"
-        ]);
+        );
 
 
     const device =
-        getField(row, [
+        getValue(
+            row,
             "NAMA PERANGKAT CCTV"
-        ]);
+        );
 
 
     const job =
-        getField(row, [
+        getValue(
+            row,
             "Nama Pekerjaan"
-        ]);
+        );
 
 
     const location =
-        getField(row, [
+        getValue(
+            row,
             "Lokasi Pekerjaan"
-        ]);
+        );
 
 
     const officer =
-        getField(row, [
+        getValue(
+            row,
             "Petugas Pelaksana di Lapangan"
-        ]);
+        );
 
 
     const documentation =
-        getField(row, [
+        getValue(
+            row,
             "Dokumentasi CCTV"
-        ]);
+        );
 
 
-    const dateObject =
-        parseTimestamp(timestamp);
+    /* -----------------------------------------
+       DATA TEMUAN
+    ----------------------------------------- */
+
+    const description =
+        getValue(
+            row,
+            "Deskripsi Temuan (Jika Ada)"
+        );
+
+
+    const findingTime =
+        getValue(
+            row,
+            "Waktu Temuan"
+        );
+
+
+    const findingDocumentation =
+        getValue(
+            row,
+            "Dokumentasi Temuan"
+        );
+
+
+    const followUp =
+        getValue(
+            row,
+            "Tindak Lanjut (Tegur online, CMC, dsb)"
+        );
+
+
+    const information =
+        getValue(
+            row,
+            "Keterangan"
+        );
 
 
     return {
+
+        original: row,
+
+        rowNumber:
+            Number(
+                row._row ||
+                row._rowNumber ||
+                0
+            ),
 
         timestamp,
 
         dateObject,
 
         dateText:
-            dateObject
-                ? formatTimestamp(dateObject)
-                : timestamp || "-",
+            formatDateTime(
+                dateObject
+            ),
 
-        up3:
-            up3 || "-",
+        dateOnly:
+            formatDateOnly(
+                dateObject
+            ),
 
-        ulp:
-            ulp || "-",
+        up3,
 
-        device:
-            device || "-",
+        ulp,
 
-        job:
-            job || "-",
+        device,
 
-        location:
-            location || "-",
+        job,
 
-        officer:
-            officer || "-",
+        location,
 
-        documentation:
-            documentation || "-"
+        officer,
 
+        documentation,
+
+
+        /* DATA POPUP */
+
+        description,
+
+        findingTime,
+
+        findingDocumentation,
+
+        followUp,
+
+        information
     };
 }
 
 
 /* =========================================================
-   LOAD CSV
+   LOAD DATA DARI GOOGLE SHEETS CSV
 ========================================================= */
 
-async function fetchCSV(url) {
-
-    const response =
-        await fetch(
-            url,
-            {
-                cache: "no-store"
-            }
-        );
-
-
-    if (!response.ok) {
-
-        throw new Error(
-            `HTTP ${response.status}`
-        );
-    }
-
-
-    const text =
-        await response.text();
-
-
-    if (
-        !text ||
-        text.trim().length === 0
-    ) {
-
-        throw new Error(
-            "CSV kosong."
-        );
-    }
-
-
-    return text;
-}
-
-
-/* =========================================================
-   FETCH DENGAN FALLBACK CORS
-========================================================= */
-
-async function fetchCSVWithFallback(url) {
+async function loadFromURL(url) {
 
     try {
 
-        return await fetchCSV(url);
-
-    } catch (directError) {
-
-        console.warn(
-            "Fetch langsung gagal:",
-            directError
-        );
-    }
-
-
-    /*
-       Fallback 1
-       allorigins
-    */
-
-    try {
-
-        const proxyUrl =
-            "https://api.allorigins.win/raw?url=" +
-            encodeURIComponent(url);
-
-
-        return await fetchCSV(proxyUrl);
-
-    } catch (proxyError) {
-
-        console.warn(
-            "AllOrigins gagal:",
-            proxyError
-        );
-    }
-
-
-    /*
-       Fallback 2
-       corsproxy
-    */
-
-    try {
-
-        const proxyUrl =
-            "https://corsproxy.io/?" +
-            encodeURIComponent(url);
-
-
-        return await fetchCSV(proxyUrl);
-
-    } catch (proxyError2) {
-
-        console.warn(
-            "Corsproxy gagal:",
-            proxyError2
+        console.log(
+            "Memuat data dari:",
+            url
         );
 
-        throw new Error(
-            "Tidak dapat mengambil data Spreadsheet."
+
+        if (
+            typeof Papa ===
+            "undefined"
+        ) {
+
+            throw new Error(
+                "PapaParse tidak ditemukan."
+            );
+        }
+
+
+        const response =
+            await fetch(
+                url,
+                {
+                    cache: "no-store"
+                }
+            );
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                "HTTP " +
+                response.status
+            );
+        }
+
+
+        const csvText =
+            await response.text();
+
+
+        console.log(
+            "CSV berhasil diterima."
         );
-    }
-}
 
 
-/* =========================================================
-   PARSE CSV
-========================================================= */
+        console.log(
+            "Ukuran CSV:",
+            csvText.length,
+            "karakter"
+        );
 
-function parseCSV(text) {
 
-    return new Promise(
-        (resolve, reject) => {
-
+        const parsed =
             Papa.parse(
-                text,
+                csvText,
                 {
                     header: true,
 
                     skipEmptyLines: true,
 
-                    transformHeader: header =>
-                        header.trim(),
+                    transformHeader:
+                        function(header) {
 
-                    complete: result => {
-
-                        if (result.errors?.length) {
-
-                            console.warn(
-                                "CSV errors:",
-                                result.errors
-                            );
+                            return String(
+                                header
+                            ).trim();
                         }
-
-
-                        resolve(
-                            result.data || []
-                        );
-                    },
-
-                    error: error => {
-
-                        reject(error);
-                    }
                 }
             );
 
+
+        console.log(
+            "Jumlah baris CSV:",
+            parsed.data.length
+        );
+
+
+        if (
+            parsed.errors &&
+            parsed.errors.length
+        ) {
+
+            console.warn(
+                "Peringatan CSV:",
+                parsed.errors
+            );
         }
-    );
-}
 
 
-/* =========================================================
-   LOAD URL
-========================================================= */
-
-async function loadFromURL(
-    url,
-    save = true
-) {
-
-    if (!url) {
-
-        throw new Error(
-            "URL Spreadsheet belum diisi."
-        );
-    }
+        const rows =
+            parsed.data || [];
 
 
-    setStatus(
-        "Mengambil data dari Google Spreadsheet..."
-    );
+        /* -----------------------------------------
+           NORMALISASI DATA
+        ----------------------------------------- */
 
+        DATA =
+            rows
+                .map(
+                    function(row, index) {
 
-    const csv =
-        await fetchCSVWithFallback(url);
+                        /*
+                         * Header Spreadsheet = baris 1
+                         * Data pertama = baris 2
+                         */
 
+                        row._row =
+                            index + 2;
 
-    const rows =
-        await parseCSV(csv);
+                        return normalizeRow(
+                            row
+                        );
+                    }
+                )
+                .filter(
+                    function(row) {
 
-
-    const normalized =
-        rows
-            .map(normalizeRow)
-            .filter(row => {
-
-                return (
-                    row.timestamp !== "-" ||
-                    row.up3 !== "-" ||
-                    row.ulp !== "-" ||
-                    row.device !== "-"
+                        return (
+                            row.timestamp ||
+                            row.up3 ||
+                            row.ulp ||
+                            row.device ||
+                            row.job ||
+                            row.location ||
+                            row.officer
+                        );
+                    }
                 );
-            });
 
 
-    if (!normalized.length) {
-
-        throw new Error(
-            "Data Spreadsheet tidak ditemukan."
+        console.log(
+            "DATA berhasil dimuat:",
+            DATA.length
         );
-    }
 
 
-    DATA = normalized;
+        console.log(
+            DATA
+        );
 
 
-    if (save) {
+        /* -----------------------------------------
+           SIMPAN URL
+        ----------------------------------------- */
 
         localStorage.setItem(
             STORAGE_URL,
             url
         );
+
+
+        /* -----------------------------------------
+           RENDER
+        ----------------------------------------- */
+
+        renderDashboard();
+
+        renderMonitoring();
+
+        renderLaporan();
+
+        renderCharts();
+
+
+        updateConnectionStatus(
+            true
+        );
+
+
+        return true;
+
+
+    } catch (error) {
+
+        console.error(
+            "Gagal memuat data:",
+            error
+        );
+
+
+        updateConnectionStatus(
+            false
+        );
+
+
+        const tbody =
+            $("laporanTable");
+
+
+        if (tbody) {
+
+            tbody.innerHTML = `
+                <tr>
+                    <td
+                        colspan="10"
+                        style="
+                            text-align:center;
+                            padding:30px;
+                            color:#dc2626;
+                        "
+                    >
+                        Data gagal dimuat.
+                        <br><br>
+                        ${escapeHTML(
+                            error.message
+                        )}
+                    </td>
+                </tr>
+            `;
+        }
+
+
+        return false;
+    }
+}
+
+
+/* =========================================================
+   RENDER DATA LAPORAN
+========================================================= */
+
+function renderLaporan() {
+
+    const tbody =
+        $("laporanTable");
+
+
+    if (!tbody) {
+
+        console.error(
+            "Element #laporanTable tidak ditemukan."
+        );
+
+        return;
     }
 
 
-    afterDataLoaded(
-        `Berhasil memuat ${DATA.length} data dari Spreadsheet.`
+    tbody.innerHTML = "";
+
+
+    if (
+        !DATA ||
+        DATA.length === 0
+    ) {
+
+        tbody.innerHTML = `
+            <tr>
+                <td
+                    colspan="10"
+                    style="
+                        text-align:center;
+                        padding:30px;
+                    "
+                >
+                    Tidak ada data laporan.
+                </td>
+            </tr>
+        `;
+
+        updateResultCount(0);
+
+        return;
+    }
+
+
+    DATA.forEach(
+        function(row, index) {
+
+            const tr =
+                document.createElement(
+                    "tr"
+                );
+
+
+            tr.innerHTML = `
+
+                <!-- NO -->
+
+                <td>
+                    ${index + 1}
+                </td>
+
+
+                <!-- TANGGAL & WAKTU -->
+
+                <td>
+                    ${escapeHTML(
+                        row.dateText || "-"
+                    )}
+                </td>
+
+
+                <!-- UP3 -->
+
+                <td>
+                    ${escapeHTML(
+                        row.up3 || "-"
+                    )}
+                </td>
+
+
+                <!-- ULP -->
+
+                <td>
+                    ${escapeHTML(
+                        row.ulp || "-"
+                    )}
+                </td>
+
+
+                <!-- PERANGKAT -->
+
+                <td>
+                    ${escapeHTML(
+                        row.device || "-"
+                    )}
+                </td>
+
+
+                <!-- PEKERJAAN -->
+
+                <td>
+                    ${escapeHTML(
+                        row.job || "-"
+                    )}
+                </td>
+
+
+                <!-- LOKASI -->
+
+                <td>
+                    ${escapeHTML(
+                        row.location || "-"
+                    )}
+                </td>
+
+
+                <!-- PETUGAS -->
+
+                <td>
+                    ${escapeHTML(
+                        row.officer || "-"
+                    )}
+                </td>
+
+
+                <!-- DOKUMENTASI CCTV -->
+
+                <td>
+
+                    ${
+                        row.documentation
+                            ? `
+                                <a
+                                    href="${escapeAttribute(
+                                        row.documentation
+                                    )}"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                    Lihat
+                                </a>
+                            `
+                            : "-"
+                    }
+
+                </td>
+
+
+                <!-- AKSI -->
+
+                <td>
+
+                    <button
+                        type="button"
+                        class="action-btn"
+                        onclick="openEditModal(${row.rowNumber})"
+                    >
+                        ✎ Edit
+                    </button>
+
+                </td>
+            `;
+
+
+            tbody.appendChild(
+                tr
+            );
+        }
+    );
+
+
+    updateResultCount(
+        DATA.length
     );
 }
 
 
 /* =========================================================
-   SET STATUS
+   RESULT COUNT
 ========================================================= */
 
-function setStatus(message) {
+function updateResultCount(count) {
 
-    const status =
-        $("statusMsg");
-
-    if (status) {
-
-        status.textContent =
-            message;
-    }
-}
-
-
-/* =========================================================
-   AFTER DATA LOADED
-========================================================= */
-
-function afterDataLoaded(message) {
-
-    updateDashboard();
-
-    renderMonitoring();
-
-    renderLaporan();
-
-    renderCharts();
-
-    updateStatusSystem();
-
-    setStatus(message);
-}
-
-
-/* =========================================================
-   UPDATE DASHBOARD
-========================================================= */
-
-function updateDashboard() {
-
-    $("totalData").textContent =
-        DATA.length;
-
-
-    const today =
-        new Date();
-
-
-    const todayKey =
-        [
-            today.getFullYear(),
-
-            String(
-                today.getMonth() + 1
-            ).padStart(2, "0"),
-
-            String(
-                today.getDate()
-            ).padStart(2, "0")
-
-        ].join("-");
-
-
-    const todayCount =
-        DATA.filter(row => {
-
-            if (!row.dateObject) {
-
-                return false;
-            }
-
-
-            const key =
-                [
-                    row.dateObject.getFullYear(),
-
-                    String(
-                        row.dateObject.getMonth() + 1
-                    ).padStart(2, "0"),
-
-                    String(
-                        row.dateObject.getDate()
-                    ).padStart(2, "0")
-
-                ].join("-");
-
-
-            return key === todayKey;
-
-        }).length;
-
-
-    $("todayData").textContent =
-        todayCount;
-
-
-    const devices =
-        new Set(
-
-            DATA
-                .map(row => row.device)
-                .filter(
-                    value =>
-                        value &&
-                        value !== "-"
-                )
-
+    const elements =
+        document.querySelectorAll(
+            ".result-count"
         );
 
 
-    $("totalCctv").textContent =
-        devices.size;
+    elements.forEach(
+        function(element) {
 
-
-    const units =
-        new Set(
-
-            DATA
-                .map(row => row.ulp)
-                .filter(
-                    value =>
-                        value &&
-                        value !== "-"
-                )
-
-        );
-
-
-    $("totalUnit").textContent =
-        units.size;
-
-
-    renderRecent();
-}
-
-
-/* =========================================================
-   UPDATE STATUS
-========================================================= */
-
-function updateStatusSystem() {
-
-    $("dataActive").textContent =
-        DATA.length;
-
-
-    const status =
-        $("dataStatus");
-
-
-    if (DATA.length > 0) {
-
-        status.textContent =
-            "Terhubung";
-
-        status.classList.add(
-            "status-connected"
-        );
-
-    } else {
-
-        status.textContent =
-            "Belum terhubung";
-
-        status.classList.remove(
-            "status-connected"
-        );
-    }
-}
-
-
-/* =========================================================
-   SORT DATA
-========================================================= */
-
-function sortedData() {
-
-    return [...DATA].sort(
-        (a, b) => {
-
-            const timeA =
-                a.dateObject
-                    ? a.dateObject.getTime()
-                    : 0;
-
-            const timeB =
-                b.dateObject
-                    ? b.dateObject.getTime()
-                    : 0;
-
-            return timeB - timeA;
+            element.textContent =
+                count + " data";
         }
     );
 }
 
 
 /* =========================================================
-   AKTIVITAS TERBARU
+   MONITORING HARIAN
 ========================================================= */
 
-function renderRecent() {
-
-    const container =
-        $("recentList");
-
-
-    if (!DATA.length) {
-
-        container.innerHTML =
-            `<div class="empty-state">
-                Belum ada data.
-             </div>`;
-
-        return;
-    }
-
-
-    const recent =
-        sortedData().slice(0, 8);
-
-
-    container.innerHTML =
-        recent.map(row => {
-
-            const parts =
-                row.dateText.split(" ");
-
-
-            const date =
-                parts[0] || "-";
-
-
-            const time =
-                parts[1] || "-";
-
-
-            return `
-
-                <div class="activity-item">
-
-                    <div class="activity-time">
-
-                        <strong>
-                            ${escapeHTML(date)}
-                        </strong>
-
-                        <br>
-
-                        ${escapeHTML(time)}
-
-                    </div>
-
-
-                    <div class="activity-main">
-
-                        <strong>
-                            ${escapeHTML(row.device)}
-                        </strong>
-
-                        <span>
-                            ${escapeHTML(row.job)}
-                        </span>
-
-                    </div>
-
-
-                    <div class="activity-location">
-
-                        ${escapeHTML(row.ulp)}
-
-                        <br>
-
-                        ${escapeHTML(row.location)}
-
-                    </div>
-
-                </div>
-
-            `;
-
-        }).join("");
-}
-
-
-/* =========================================================
-   MONITORING
-========================================================= */
-
-function renderMonitoring(
-    search = ""
-) {
+function renderMonitoring() {
 
     const tbody =
         $("monitoringTable");
 
 
-    const keyword =
-        search.trim().toLowerCase();
+    if (!tbody) {
+        return;
+    }
 
 
-    const rows =
-        sortedData()
-            .filter(row => {
-
-                if (!keyword) {
-
-                    return true;
-                }
+    tbody.innerHTML = "";
 
 
-                return [
+    if (!DATA.length) {
 
-                    row.dateText,
-
-                    row.up3,
-
-                    row.ulp,
-
-                    row.device,
-
-                    row.job,
-
-                    row.location,
-
-                    row.officer
-
-                ]
-                    .join(" ")
-                    .toLowerCase()
-                    .includes(keyword);
-
-            });
-
-
-    if (!rows.length) {
-
-        tbody.innerHTML =
-            `<tr>
-                <td colspan="8" class="empty-state">
-                    Data tidak ditemukan.
+        tbody.innerHTML = `
+            <tr>
+                <td
+                    colspan="8"
+                    style="
+                        text-align:center;
+                        padding:30px;
+                    "
+                >
+                    Tidak ada data.
                 </td>
-             </tr>`;
+            </tr>
+        `;
 
         return;
     }
 
 
-    tbody.innerHTML =
-        rows.map(
-            (row, index) => `
+    DATA.forEach(
+        function(row, index) {
 
-            <tr>
+            const tr =
+                document.createElement(
+                    "tr"
+                );
+
+
+            tr.innerHTML = `
 
                 <td>
                     ${index + 1}
                 </td>
 
                 <td>
-                    ${escapeHTML(row.dateText)}
+                    ${escapeHTML(
+                        row.dateText || "-"
+                    )}
                 </td>
 
                 <td>
-                    ${escapeHTML(row.up3)}
+                    ${escapeHTML(
+                        row.up3 || "-"
+                    )}
                 </td>
 
                 <td>
-                    ${escapeHTML(row.ulp)}
+                    ${escapeHTML(
+                        row.ulp || "-"
+                    )}
                 </td>
 
                 <td>
-                    ${escapeHTML(row.device)}
+                    ${escapeHTML(
+                        row.device || "-"
+                    )}
                 </td>
 
                 <td>
-                    ${escapeHTML(row.job)}
+                    ${escapeHTML(
+                        row.job || "-"
+                    )}
                 </td>
 
                 <td>
-                    ${escapeHTML(row.location)}
+                    ${escapeHTML(
+                        row.location || "-"
+                    )}
                 </td>
 
                 <td>
-                    ${escapeHTML(row.officer)}
+                    ${escapeHTML(
+                        row.officer || "-"
+                    )}
                 </td>
 
-            </tr>
+            `;
 
-        `
-        ).join("");
+
+            tbody.appendChild(
+                tr
+            );
+        }
+    );
 }
 
 
 /* =========================================================
-   DATA LAPORAN
+   DASHBOARD
 ========================================================= */
 
-function renderLaporan(
-    search = ""
+function renderDashboard() {
+
+    /* -----------------------------------------
+       TOTAL DATA
+    ----------------------------------------- */
+
+    const totalData =
+        $("totalData");
+
+
+    if (totalData) {
+
+        totalData.textContent =
+            DATA.length;
+    }
+
+
+    /* -----------------------------------------
+       DATA HARI INI
+    ----------------------------------------- */
+
+    const today =
+        formatDateOnly(
+            new Date()
+        );
+
+
+    const todayCount =
+        DATA.filter(
+            function(row) {
+
+                return (
+                    row.dateOnly ===
+                    today
+                );
+            }
+        ).length;
+
+
+    const todayData =
+        $("todayData");
+
+
+    if (todayData) {
+
+        todayData.textContent =
+            todayCount;
+    }
+
+
+    /* -----------------------------------------
+       JUMLAH CCTV
+    ----------------------------------------- */
+
+    const cctv =
+        new Set(
+            DATA
+                .map(
+                    function(row) {
+
+                        return row.device;
+                    }
+                )
+                .filter(Boolean)
+        );
+
+
+    const totalCctv =
+        $("totalCctv");
+
+
+    if (totalCctv) {
+
+        totalCctv.textContent =
+            cctv.size;
+    }
+
+
+    /* -----------------------------------------
+       JUMLAH UNIT
+    ----------------------------------------- */
+
+    const units =
+        new Set(
+            DATA
+                .map(
+                    function(row) {
+
+                        return row.ulp;
+                    }
+                )
+                .filter(Boolean)
+        );
+
+
+    const totalUnit =
+        $("totalUnit");
+
+
+    if (totalUnit) {
+
+        totalUnit.textContent =
+            units.size;
+    }
+
+
+    /* -----------------------------------------
+       DATA AKTIF SIDEBAR
+    ----------------------------------------- */
+
+    const dataActive =
+        $("dataActive");
+
+
+    if (dataActive) {
+
+        dataActive.textContent =
+            DATA.length;
+    }
+
+
+    /* -----------------------------------------
+       AKTIVITAS TERBARU
+    ----------------------------------------- */
+
+    const recentList =
+        $("recentList");
+
+
+    if (!recentList) {
+        return;
+    }
+
+
+    const latest =
+        [...DATA]
+            .sort(
+                function(a, b) {
+
+                    const dateA =
+                        a.dateObject
+                            ? a.dateObject.getTime()
+                            : 0;
+
+                    const dateB =
+                        b.dateObject
+                            ? b.dateObject.getTime()
+                            : 0;
+
+                    return (
+                        dateB -
+                        dateA
+                    );
+                }
+            )
+            .slice(0, 5);
+
+
+    if (!latest.length) {
+
+        recentList.innerHTML = `
+            <div
+                style="
+                    padding:20px 0;
+                    color:var(--muted);
+                    font-size:12px;
+                "
+            >
+                Belum ada aktivitas.
+            </div>
+        `;
+
+        return;
+    }
+
+
+    recentList.innerHTML =
+        latest
+            .map(
+                function(row) {
+
+                    return `
+
+                        <div class="activity-item">
+
+                            <div class="activity-time">
+
+                                ${escapeHTML(
+                                    row.dateText || "-"
+                                )}
+
+                            </div>
+
+
+                            <div class="activity-main">
+
+                                <strong>
+
+                                    ${escapeHTML(
+                                        row.job || "-"
+                                    )}
+
+                                </strong>
+
+
+                                <span>
+
+                                    ${escapeHTML(
+                                        row.device || "-"
+                                    )}
+
+                                </span>
+
+                            </div>
+
+
+                            <div class="activity-location">
+
+                                ${escapeHTML(
+                                    row.location || "-"
+                                )}
+
+                            </div>
+
+                        </div>
+
+                    `;
+                }
+            )
+            .join("");
+}
+
+
+/* =========================================================
+   POPUP EDIT
+========================================================= */
+
+function openEditModal(rowNumber) {
+
+    console.log(
+        "Membuka data baris:",
+        rowNumber
+    );
+
+
+    const row =
+        DATA.find(
+            function(item) {
+
+                return (
+                    Number(
+                        item.rowNumber
+                    ) ===
+                    Number(
+                        rowNumber
+                    )
+                );
+            }
+        );
+
+
+    if (!row) {
+
+        alert(
+            "Data tidak ditemukan."
+        );
+
+        return;
+    }
+
+
+    currentEditingRow =
+        row;
+
+
+    /* -----------------------------------------
+       NOMOR BARIS
+    ----------------------------------------- */
+
+    const rowNumberInput =
+        $("editRowNumber");
+
+
+    if (rowNumberInput) {
+
+        rowNumberInput.value =
+            row.rowNumber || "";
+    }
+
+
+    /* -----------------------------------------
+       PEKERJAAN
+    ----------------------------------------- */
+
+    const editJob =
+        $("editJob");
+
+
+    if (editJob) {
+
+        editJob.textContent =
+            row.job || "-";
+    }
+
+
+    /* -----------------------------------------
+       LOKASI
+    ----------------------------------------- */
+
+    const editLocation =
+        $("editLocation");
+
+
+    if (editLocation) {
+
+        editLocation.textContent =
+            row.location || "-";
+    }
+
+
+    /* -----------------------------------------
+       DESKRIPSI TEMUAN
+    ----------------------------------------- */
+
+    const editDescription =
+        $("editDescription");
+
+
+    if (editDescription) {
+
+        editDescription.value =
+            row.description || "";
+    }
+
+
+    /* -----------------------------------------
+       WAKTU TEMUAN
+    ----------------------------------------- */
+
+    const editFindingTime =
+        $("editFindingTime");
+
+
+    if (editFindingTime) {
+
+        editFindingTime.value =
+            formatDateForInput(
+                row.findingTime
+            );
+    }
+
+
+    /* -----------------------------------------
+       DOKUMENTASI TEMUAN
+    ----------------------------------------- */
+
+    const editFindingDocumentation =
+        $("editFindingDocumentation");
+
+
+    if (editFindingDocumentation) {
+
+        editFindingDocumentation.value =
+            row.findingDocumentation || "";
+    }
+
+
+    /* -----------------------------------------
+       TINDAK LANJUT
+    ----------------------------------------- */
+
+    const editFollowUp =
+        $("editFollowUp");
+
+
+    if (editFollowUp) {
+
+        const currentValue =
+            row.followUp || "";
+
+
+        /*
+         * Jika data lama tidak ada
+         * di option, tambahkan sementara.
+         */
+
+        if (
+            currentValue &&
+            !Array.from(
+                editFollowUp.options
+            ).some(
+                function(option) {
+
+                    return (
+                        option.value ===
+                        currentValue
+                    );
+                }
+            )
+        ) {
+
+            const option =
+                document.createElement(
+                    "option"
+                );
+
+
+            option.value =
+                currentValue;
+
+
+            option.textContent =
+                currentValue;
+
+
+            editFollowUp.appendChild(
+                option
+            );
+        }
+
+
+        editFollowUp.value =
+            currentValue;
+    }
+
+
+    /* -----------------------------------------
+       KETERANGAN
+    ----------------------------------------- */
+
+    const editInformation =
+        $("editInformation");
+
+
+    if (editInformation) {
+
+        editInformation.value =
+            row.information || "";
+    }
+
+
+    /* -----------------------------------------
+       BUKA MODAL
+    ----------------------------------------- */
+
+    const modal =
+        $("editModal");
+
+
+    if (modal) {
+
+        modal.classList.add(
+            "active"
+        );
+    }
+}
+
+
+/* =========================================================
+   TUTUP POPUP
+========================================================= */
+
+function closeEditModal() {
+
+    const modal =
+        $("editModal");
+
+
+    if (modal) {
+
+        modal.classList.remove(
+            "active"
+        );
+    }
+
+
+    currentEditingRow =
+        null;
+}
+
+
+/* =========================================================
+   SIMPAN EDIT KE GOOGLE SHEETS
+========================================================= */
+
+async function saveEdit(event) {
+
+    event.preventDefault();
+
+
+    if (!currentEditingRow) {
+
+        alert(
+            "Data yang diedit tidak ditemukan."
+        );
+
+        return;
+    }
+
+
+    /* -----------------------------------------
+       AMBIL DATA DARI FORM
+    ----------------------------------------- */
+
+    const editDescription =
+        $("editDescription");
+
+
+    const editFindingTime =
+        $("editFindingTime");
+
+
+    const editFindingDocumentation =
+        $("editFindingDocumentation");
+
+
+    const editFollowUp =
+        $("editFollowUp");
+
+
+    const editInformation =
+        $("editInformation");
+
+
+    const description =
+        editDescription
+            ? editDescription.value.trim()
+            : "";
+
+
+    const findingTime =
+        editFindingTime
+            ? editFindingTime.value
+            : "";
+
+
+    const findingDocumentation =
+        editFindingDocumentation
+            ? editFindingDocumentation.value.trim()
+            : "";
+
+
+    const followUp =
+        editFollowUp
+            ? editFollowUp.value
+            : "";
+
+
+    const information =
+        editInformation
+            ? editInformation.value.trim()
+            : "";
+
+
+    /* -----------------------------------------
+       NOMOR BARIS GOOGLE SHEETS
+    ----------------------------------------- */
+
+    const rowNumber =
+        Number(
+            currentEditingRow.rowNumber
+        );
+
+
+    if (!rowNumber || rowNumber < 2) {
+
+        alert(
+            "Nomor baris Spreadsheet tidak valid."
+        );
+
+        return;
+    }
+
+
+    /* -----------------------------------------
+       CEK API
+    ----------------------------------------- */
+
+    const API_URL =
+        DEFAULT_API_URL;
+
+
+    if (!API_URL) {
+
+        alert(
+            "URL Google Apps Script belum diatur."
+        );
+
+        return;
+    }
+
+
+    /* -----------------------------------------
+       DATA YANG DIKIRIM
+    ----------------------------------------- */
+
+    const payload = {
+
+        row: rowNumber,
+
+        data: {
+
+            "Deskripsi Temuan (Jika Ada)":
+                description,
+
+            "Waktu Temuan":
+                findingTime,
+
+            "Dokumentasi Temuan":
+                findingDocumentation,
+
+            "Tindak Lanjut (Tegur online, CMC, dsb)":
+                followUp,
+
+            "Keterangan":
+                information
+        }
+    };
+
+
+    console.log(
+        "Mengirim data ke Apps Script:",
+        payload
+    );
+
+
+    /* -----------------------------------------
+       TOMBOL SIMPAN
+    ----------------------------------------- */
+
+    const saveButton =
+        $("saveEditBtn");
+
+
+    const oldButtonText =
+        saveButton
+            ? saveButton.textContent
+            : "";
+
+
+    if (saveButton) {
+
+        saveButton.disabled =
+            true;
+
+        saveButton.textContent =
+            "Menyimpan...";
+    }
+
+
+    try {
+
+        /*
+         * PENTING:
+         *
+         * Content-Type dibuat text/plain
+         * agar tidak memicu CORS preflight
+         * yang sering bermasalah pada Apps Script.
+         */
+
+        const response =
+            await fetch(
+                API_URL,
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "text/plain;charset=utf-8"
+                    },
+
+                    body:
+                        JSON.stringify(
+                            payload
+                        )
+                }
+            );
+
+
+        const responseText =
+            await response.text();
+
+
+        console.log(
+            "Response Apps Script:",
+            responseText
+        );
+
+
+        let result;
+
+
+        try {
+
+            result =
+                JSON.parse(
+                    responseText
+                );
+
+        } catch (jsonError) {
+
+            console.error(
+                "Response bukan JSON:",
+                responseText
+            );
+
+            throw new Error(
+                "Response dari Google Apps Script tidak valid."
+            );
+        }
+
+
+        /* -----------------------------------------
+           CEK HASIL API
+        ----------------------------------------- */
+
+        if (!result.success) {
+
+            throw new Error(
+                result.message ||
+                "Data gagal disimpan."
+            );
+        }
+
+
+        /* -----------------------------------------
+           UPDATE MEMORY
+        ----------------------------------------- */
+
+        currentEditingRow.description =
+            description;
+
+
+        currentEditingRow.findingTime =
+            findingTime;
+
+
+        currentEditingRow.findingDocumentation =
+            findingDocumentation;
+
+
+        currentEditingRow.followUp =
+            followUp;
+
+
+        currentEditingRow.information =
+            information;
+
+
+        /* -----------------------------------------
+           UPDATE DATA ASLI
+        ----------------------------------------- */
+
+        if (
+            currentEditingRow.original
+        ) {
+
+            currentEditingRow.original[
+                "Deskripsi Temuan (Jika Ada)"
+            ] =
+                description;
+
+
+            currentEditingRow.original[
+                "Waktu Temuan"
+            ] =
+                findingTime;
+
+
+            currentEditingRow.original[
+                "Dokumentasi Temuan"
+            ] =
+                findingDocumentation;
+
+
+            currentEditingRow.original[
+                "Tindak Lanjut (Tegur online, CMC, dsb)"
+            ] =
+                followUp;
+
+
+            currentEditingRow.original[
+                "Keterangan"
+            ] =
+                information;
+        }
+
+
+        /* -----------------------------------------
+           TUTUP MODAL
+        ----------------------------------------- */
+
+        closeEditModal();
+
+
+        /* -----------------------------------------
+           RENDER ULANG
+        ----------------------------------------- */
+
+        renderLaporan();
+
+        renderDashboard();
+
+
+        alert(
+            "Data berhasil disimpan ke Google Spreadsheet."
+        );
+
+
+        console.log(
+            "Data berhasil disimpan:",
+            result
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "Gagal menyimpan data:",
+            error
+        );
+
+
+        alert(
+            "Data gagal disimpan ke Google Spreadsheet.\n\n" +
+            error.message +
+            "\n\n" +
+            "Periksa deployment Google Apps Script dan URL /exec."
+        );
+
+
+    } finally {
+
+        if (saveButton) {
+
+            saveButton.disabled =
+                false;
+
+            saveButton.textContent =
+                oldButtonText ||
+                "Simpan";
+        }
+    }
+}
+
+
+/* =========================================================
+   STATUS KONEKSI
+========================================================= */
+
+function updateConnectionStatus(
+    connected
 ) {
 
-    const tbody =
-        $("laporanTable");
+    const status =
+        $("dataStatus");
 
 
-    const keyword =
-        search.trim().toLowerCase();
+    if (!status) {
+        return;
+    }
 
 
-    const rows =
-        sortedData()
-            .filter(row => {
+    if (connected) {
 
-                if (!keyword) {
+        status.textContent =
+            "Data Terhubung";
 
-                    return true;
-                }
+        status.style.color =
+            "";
+
+    } else {
+
+        status.textContent =
+            "Data Tidak Terhubung";
+    }
+}
 
 
-                return [
+/* =========================================================
+   SEARCH DATA
+========================================================= */
+
+function searchData(keyword) {
+
+    const text =
+        String(
+            keyword || ""
+        )
+            .toLowerCase()
+            .trim();
+
+
+    if (!text) {
+
+        renderLaporan();
+
+        return;
+    }
+
+
+    const filtered =
+        DATA.filter(
+            function(row) {
+
+                const searchable = [
 
                     row.dateText,
 
@@ -1046,256 +1915,425 @@ function renderLaporan(
 
                     row.officer,
 
-                    row.documentation
+                    row.documentation,
+
+                    row.description,
+
+                    row.findingTime,
+
+                    row.findingDocumentation,
+
+                    row.followUp,
+
+                    row.information
 
                 ]
                     .join(" ")
-                    .toLowerCase()
-                    .includes(keyword);
-
-            });
+                    .toLowerCase();
 
 
-    if (!rows.length) {
+                return searchable.includes(
+                    text
+                );
+            }
+        );
 
-        tbody.innerHTML =
-            `<tr>
-                <td colspan="9" class="empty-state">
+
+    renderFilteredLaporan(
+        filtered
+    );
+}
+
+
+/* =========================================================
+   RENDER HASIL SEARCH
+========================================================= */
+
+function renderFilteredLaporan(
+    filteredRows
+) {
+
+    const tbody =
+        $("laporanTable");
+
+
+    if (!tbody) {
+        return;
+    }
+
+
+    tbody.innerHTML = "";
+
+
+    if (!filteredRows.length) {
+
+        tbody.innerHTML = `
+            <tr>
+                <td
+                    colspan="10"
+                    style="
+                        text-align:center;
+                        padding:30px;
+                    "
+                >
                     Data tidak ditemukan.
                 </td>
-             </tr>`;
+            </tr>
+        `;
+
+
+        updateResultCount(0);
 
         return;
     }
 
 
-    tbody.innerHTML =
-        rows.map(
-            (row, index) => {
+    filteredRows.forEach(
+        function(row, index) {
 
-                let documentation =
-                    "-";
-
-
-                if (
-                    row.documentation &&
-                    row.documentation !== "-"
-                ) {
-
-                    const safeUrl =
-                        row.documentation.trim();
+            const tr =
+                document.createElement(
+                    "tr"
+                );
 
 
-                    if (
-                        safeUrl.startsWith(
-                            "http://"
-                        ) ||
-                        safeUrl.startsWith(
-                            "https://"
-                        )
-                    ) {
+            tr.innerHTML = `
 
-                        documentation =
-                            `<a
-                                href="${escapeHTML(safeUrl)}"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                            >
-                                Lihat
-                            </a>`;
+                <td>
+                    ${index + 1}
+                </td>
 
-                    } else {
+                <td>
+                    ${escapeHTML(
+                        row.dateText || "-"
+                    )}
+                </td>
 
-                        documentation =
-                            escapeHTML(
-                                row.documentation
-                            );
+                <td>
+                    ${escapeHTML(
+                        row.up3 || "-"
+                    )}
+                </td>
+
+                <td>
+                    ${escapeHTML(
+                        row.ulp || "-"
+                    )}
+                </td>
+
+                <td>
+                    ${escapeHTML(
+                        row.device || "-"
+                    )}
+                </td>
+
+                <td>
+                    ${escapeHTML(
+                        row.job || "-"
+                    )}
+                </td>
+
+                <td>
+                    ${escapeHTML(
+                        row.location || "-"
+                    )}
+                </td>
+
+                <td>
+                    ${escapeHTML(
+                        row.officer || "-"
+                    )}
+                </td>
+
+                <td>
+
+                    ${
+                        row.documentation
+                            ? `
+                                <a
+                                    href="${escapeAttribute(
+                                        row.documentation
+                                    )}"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                    Lihat
+                                </a>
+                            `
+                            : "-"
                     }
-                }
+
+                </td>
+
+                <td>
+
+                    <button
+                        type="button"
+                        class="action-btn"
+                        onclick="openEditModal(${row.rowNumber})"
+                    >
+                        ✎ Edit
+                    </button>
+
+                </td>
+
+            `;
 
 
-                return `
+            tbody.appendChild(
+                tr
+            );
+        }
+    );
 
-                    <tr>
 
-                        <td>
-                            ${index + 1}
-                        </td>
-
-                        <td>
-                            ${escapeHTML(
-                                row.dateText
-                            )}
-                        </td>
-
-                        <td>
-                            ${escapeHTML(
-                                row.up3
-                            )}
-                        </td>
-
-                        <td>
-                            ${escapeHTML(
-                                row.ulp
-                            )}
-                        </td>
-
-                        <td>
-                            ${escapeHTML(
-                                row.device
-                            )}
-                        </td>
-
-                        <td>
-                            ${escapeHTML(
-                                row.job
-                            )}
-                        </td>
-
-                        <td>
-                            ${escapeHTML(
-                                row.location
-                            )}
-                        </td>
-
-                        <td>
-                            ${escapeHTML(
-                                row.officer
-                            )}
-                        </td>
-
-                        <td>
-                            ${documentation}
-                        </td>
-
-                    </tr>
-
-                `;
-
-            }
-        ).join("");
+    updateResultCount(
+        filteredRows.length
+    );
 }
 
 
 /* =========================================================
-   CHART
+   NAVIGATION
 ========================================================= */
 
-function destroyChart(name) {
+function showView(viewName) {
 
-    if (charts[name]) {
+    const views =
+        document.querySelectorAll(
+            ".view"
+        );
 
-        charts[name].destroy();
 
-        charts[name] = null;
+    views.forEach(
+        function(view) {
+
+            view.classList.remove(
+                "active"
+            );
+        }
+    );
+
+
+    const target =
+        $("view-" + viewName);
+
+
+    if (target) {
+
+        target.classList.add(
+            "active"
+        );
+    }
+
+
+    const links =
+        document.querySelectorAll(
+            ".nav-link"
+        );
+
+
+    links.forEach(
+        function(link) {
+
+            link.classList.remove(
+                "active"
+            );
+
+
+            if (
+                link.dataset.view ===
+                viewName
+            ) {
+
+                link.classList.add(
+                    "active"
+                );
+            }
+        }
+    );
+
+
+    /* -----------------------------------------
+       UPDATE TITLE
+    ----------------------------------------- */
+
+    const topbarTitle =
+        document.querySelector(
+            ".topbar-title"
+        );
+
+
+    if (topbarTitle) {
+
+        const titles = {
+
+            dashboard:
+                "Dashboard",
+
+            monitoring:
+                "Monitoring Harian",
+
+            laporan:
+                "Data Laporan",
+
+            grafik:
+                "Visualisasi Grafik",
+
+            panduan:
+                "Panduan"
+        };
+
+
+        topbarTitle.textContent =
+            titles[viewName] ||
+            "Dashboard";
     }
 }
 
 
 /* =========================================================
-   GRAFIK BULANAN
+   THEME
 ========================================================= */
 
-function createMonthlyChart() {
+function loadTheme() {
 
-    destroyChart("line");
+    const theme =
+        localStorage.getItem(
+            "cctv_theme"
+        );
+
+
+    if (
+        theme === "dark"
+    ) {
+
+        document.body.classList.add(
+            "dark"
+        );
+    }
+}
+
+
+function toggleTheme() {
+
+    document.body.classList.toggle(
+        "dark"
+    );
+
+
+    localStorage.setItem(
+        "cctv_theme",
+
+        document.body.classList.contains(
+            "dark"
+        )
+            ? "dark"
+            : "light"
+    );
+}
+
+
+/* =========================================================
+   GRAFIK
+========================================================= */
+
+function renderCharts() {
+
+    if (
+        typeof Chart ===
+        "undefined"
+    ) {
+
+        console.warn(
+            "Chart.js tidak ditemukan."
+        );
+
+        return;
+    }
+
+
+    renderDailyChart();
+
+    renderMonthlyChart();
+
+    renderUnitChart();
+
+    renderUp3Chart();
+
+    renderJobChart();
+}
+
+
+/* =========================================================
+   GRAFIK HARIAN
+========================================================= */
+
+function renderDailyChart() {
+
+    const canvas =
+        $("dailyChart");
+
+
+    if (!canvas) {
+        return;
+    }
+
+
+    if (charts.daily) {
+
+        charts.daily.destroy();
+    }
 
 
     const counts = {};
 
 
-    DATA.forEach(row => {
+    DATA.forEach(
+        function(row) {
 
-        if (!row.dateObject) {
+            const date =
+                row.dateOnly || "-";
 
-            return;
+
+            counts[date] =
+                (counts[date] || 0) + 1;
         }
-
-
-        const year =
-            row.dateObject.getFullYear();
-
-
-        const month =
-            row.dateObject.getMonth();
-
-
-        const key =
-            `${year}-${String(month + 1).padStart(2, "0")}`;
-
-
-        counts[key] =
-            (counts[key] || 0) + 1;
-    });
-
-
-    const keys =
-        Object.keys(counts).sort();
+    );
 
 
     const labels =
-        keys.map(key => {
-
-            const [
-                year,
-                month
-            ] =
-                key.split("-");
-
-
-            const date =
-                new Date(
-                    Number(year),
-                    Number(month) - 1,
-                    1
-                );
-
-
-            return date.toLocaleDateString(
-                "id-ID",
-                {
-                    month: "short",
-                    year: "numeric"
-                }
-            );
-
-        });
+        Object.keys(counts);
 
 
     const values =
-        keys.map(
-            key => counts[key]
+        labels.map(
+            function(label) {
+
+                return counts[label];
+            }
         );
 
 
-    const ctx =
-        $("lineChart");
-
-
-    charts.line =
+    charts.daily =
         new Chart(
-            ctx,
+            canvas,
             {
-                type: "line",
+
+                type: "bar",
 
                 data: {
 
-                    labels,
+                    labels: labels,
 
                     datasets: [
 
                         {
+
                             label:
                                 "Jumlah Pekerjaan",
 
-                            data:
-                                values,
-
-                            borderWidth: 2,
-
-                            tension: 0.3,
-
-                            fill: false
+                            data: values
                         }
 
                     ]
@@ -1305,30 +2343,105 @@ function createMonthlyChart() {
 
                     responsive: true,
 
-                    maintainAspectRatio: false,
+                    maintainAspectRatio:
+                        false
+                }
+            }
+        );
+}
 
-                    plugins: {
 
-                        legend: {
-                            display: false
+/* =========================================================
+   GRAFIK BULANAN
+========================================================= */
+
+function renderMonthlyChart() {
+
+    const canvas =
+        $("lineChart");
+
+
+    if (!canvas) {
+        return;
+    }
+
+
+    if (charts.monthly) {
+
+        charts.monthly.destroy();
+    }
+
+
+    const counts = {};
+
+
+    DATA.forEach(
+        function(row) {
+
+            if (!row.dateObject) {
+                return;
+            }
+
+
+            const key =
+                `${row.dateObject.getFullYear()}-${String(
+                    row.dateObject.getMonth() + 1
+                ).padStart(2, "0")}`;
+
+
+            counts[key] =
+                (counts[key] || 0) + 1;
+        }
+    );
+
+
+    const labels =
+        Object.keys(
+            counts
+        ).sort();
+
+
+    const values =
+        labels.map(
+            function(label) {
+
+                return counts[label];
+            }
+        );
+
+
+    charts.monthly =
+        new Chart(
+            canvas,
+            {
+
+                type: "line",
+
+                data: {
+
+                    labels: labels,
+
+                    datasets: [
+
+                        {
+
+                            label:
+                                "Jumlah Pekerjaan",
+
+                            data: values,
+
+                            tension: 0.3
                         }
 
-                    },
+                    ]
+                },
 
-                    scales: {
+                options: {
 
-                        y: {
+                    responsive: true,
 
-                            beginAtZero: true,
-
-                            ticks: {
-                                precision: 0
-                            }
-
-                        }
-
-                    }
-
+                    maintainAspectRatio:
+                        false
                 }
             }
         );
@@ -1339,372 +2452,56 @@ function createMonthlyChart() {
    GRAFIK ULP
 ========================================================= */
 
-function createUnitChart() {
+function renderUnitChart() {
 
-    destroyChart("unit");
-
-
-    const counts = {};
-
-
-    DATA.forEach(row => {
-
-        if (
-            row.ulp &&
-            row.ulp !== "-"
-        ) {
-
-            counts[row.ulp] =
-                (counts[row.ulp] || 0) + 1;
-        }
-
-    });
-
-
-    const entries =
-        Object.entries(counts)
-            .sort(
-                (a, b) =>
-                    b[1] - a[1]
-            )
-            .slice(0, 15);
-
-
-    const labels =
-        entries.map(
-            item => item[0]
-        );
-
-
-    const values =
-        entries.map(
-            item => item[1]
-        );
-
-
-    const ctx =
+    const canvas =
         $("unitChart");
 
 
-    charts.unit =
-        new Chart(
-            ctx,
-            {
-                type: "bar",
-
-                data: {
-
-                    labels,
-
-                    datasets: [
-
-                        {
-                            label:
-                                "Jumlah Pekerjaan",
-
-                            data:
-                                values,
-
-                            borderWidth: 1
-                        }
-
-                    ]
-
-                },
-
-                options: {
-
-                    responsive: true,
-
-                    maintainAspectRatio: false,
-
-                    indexAxis: "y",
-
-                    plugins: {
-
-                        legend: {
-                            display: false
-                        }
-
-                    },
-
-                    scales: {
-
-                        x: {
-
-                            beginAtZero: true,
-
-                            ticks: {
-                                precision: 0
-                            }
-
-                        }
-
-                    }
-
-                }
-
-            }
-        );
-}
-
-
-/* =========================================================
-   RENDER SEMUA CHART
-========================================================= */
-
-/* =========================================================
-   CHART HELPER
-========================================================= */
-
-function destroyChart(name) {
-
-    if (charts[name]) {
-
-        charts[name].destroy();
-
-        charts[name] = null;
+    if (!canvas) {
+        return;
     }
-}
 
 
-/* =========================================================
-   GRAFIK 1
-   PEKERJAAN PER BULAN
-========================================================= */
+    if (charts.unit) {
 
-function createMonthlyChart() {
-
-    destroyChart("line");
+        charts.unit.destroy();
+    }
 
 
     const counts = {};
 
 
-    DATA.forEach(row => {
+    DATA.forEach(
+        function(row) {
 
-        if (!row.dateObject) {
+            const unit =
+                row.ulp ||
+                "Tidak diketahui";
 
-            return;
+
+            counts[unit] =
+                (counts[unit] || 0) + 1;
         }
-
-
-        const year =
-            row.dateObject.getFullYear();
-
-
-        const month =
-            row.dateObject.getMonth();
-
-
-        const key =
-            `${year}-${String(month + 1).padStart(2, "0")}`;
-
-
-        counts[key] =
-            (counts[key] || 0) + 1;
-
-    });
-
-
-    const keys =
-        Object.keys(counts).sort();
+    );
 
 
     const labels =
-        keys.map(key => {
-
-            const [
-                year,
-                month
-            ] = key.split("-");
-
-
-            const date =
-                new Date(
-                    Number(year),
-                    Number(month) - 1,
-                    1
-                );
-
-
-            return date.toLocaleDateString(
-                "id-ID",
-                {
-                    month: "short",
-                    year: "numeric"
-                }
-            );
-
-        });
+        Object.keys(counts);
 
 
     const values =
-        keys.map(
-            key => counts[key]
-        );
+        labels.map(
+            function(label) {
 
-
-    const canvas =
-        document.getElementById(
-            "lineChart"
-        );
-
-
-    if (!canvas) {
-
-        return;
-    }
-
-
-    const ctx =
-        canvas.getContext("2d");
-
-
-    charts.line =
-        new Chart(
-            ctx,
-            {
-
-                type: "line",
-
-                data: {
-
-                    labels: labels,
-
-                    datasets: [
-
-                        {
-
-                            label:
-                                "Jumlah Pekerjaan",
-
-                            data:
-                                values,
-
-                            borderWidth: 2,
-
-                            pointRadius: 4,
-
-                            pointHoverRadius: 6,
-
-                            tension: 0.3,
-
-                            fill: false
-
-                        }
-
-                    ]
-
-                },
-
-                options: {
-
-                    responsive: true,
-
-                    maintainAspectRatio: false,
-
-                    plugins: {
-
-                        legend: {
-
-                            display: false
-
-                        }
-
-                    },
-
-                    scales: {
-
-                        y: {
-
-                            beginAtZero: true,
-
-                            ticks: {
-
-                                precision: 0
-
-                            }
-
-                        }
-
-                    }
-
-                }
-
+                return counts[label];
             }
         );
-}
-
-
-/* =========================================================
-   GRAFIK 2
-   PEKERJAAN PER ULP
-========================================================= */
-
-function createUnitChart() {
-
-    destroyChart("unit");
-
-
-    const counts = {};
-
-
-    DATA.forEach(row => {
-
-        if (
-            row.ulp &&
-            row.ulp !== "-"
-        ) {
-
-            counts[row.ulp] =
-                (counts[row.ulp] || 0) + 1;
-
-        }
-
-    });
-
-
-    const entries =
-        Object.entries(counts)
-            .sort(
-                (a, b) =>
-                    b[1] - a[1]
-            )
-            .slice(0, 15);
-
-
-    const labels =
-        entries.map(
-            item => item[0]
-        );
-
-
-    const values =
-        entries.map(
-            item => item[1]
-        );
-
-
-    const canvas =
-        document.getElementById(
-            "unitChart"
-        );
-
-
-    if (!canvas) {
-
-        return;
-    }
-
-
-    const ctx =
-        canvas.getContext("2d");
 
 
     charts.unit =
         new Chart(
-            ctx,
+            canvas,
             {
 
                 type: "bar",
@@ -1720,125 +2517,78 @@ function createUnitChart() {
                             label:
                                 "Jumlah Pekerjaan",
 
-                            data:
-                                values,
-
-                            borderWidth: 1
-
+                            data: values
                         }
 
                     ]
-
                 },
 
                 options: {
 
                     responsive: true,
 
-                    maintainAspectRatio: false,
-
-                    indexAxis: "y",
-
-                    plugins: {
-
-                        legend: {
-
-                            display: false
-
-                        }
-
-                    },
-
-                    scales: {
-
-                        x: {
-
-                            beginAtZero: true,
-
-                            ticks: {
-
-                                precision: 0
-
-                            }
-
-                        }
-
-                    }
-
+                    maintainAspectRatio:
+                        false
                 }
-
             }
         );
 }
 
 
 /* =========================================================
-   GRAFIK 3
-   DISTRIBUSI PEKERJAAN PER UP3
+   GRAFIK UP3
 ========================================================= */
 
-function createUP3Chart() {
+function renderUp3Chart() {
 
-    destroyChart("up3");
+    const canvas =
+        $("up3Chart");
+
+
+    if (!canvas) {
+        return;
+    }
+
+
+    if (charts.up3) {
+
+        charts.up3.destroy();
+    }
 
 
     const counts = {};
 
 
-    DATA.forEach(row => {
+    DATA.forEach(
+        function(row) {
 
-        if (
-            row.up3 &&
-            row.up3 !== "-"
-        ) {
+            const unit =
+                row.up3 ||
+                "Tidak diketahui";
 
-            counts[row.up3] =
-                (counts[row.up3] || 0) + 1;
 
+            counts[unit] =
+                (counts[unit] || 0) + 1;
         }
-
-    });
-
-
-    const entries =
-        Object.entries(counts)
-            .sort(
-                (a, b) =>
-                    b[1] - a[1]
-            );
+    );
 
 
     const labels =
-        entries.map(
-            item => item[0]
-        );
+        Object.keys(counts);
 
 
     const values =
-        entries.map(
-            item => item[1]
+        labels.map(
+            function(label) {
+
+                return counts[label];
+            }
         );
-
-
-    const canvas =
-        document.getElementById(
-            "up3Chart"
-        );
-
-
-    if (!canvas) {
-
-        return;
-    }
-
-
-    const ctx =
-        canvas.getContext("2d");
 
 
     charts.up3 =
         new Chart(
-            ctx,
+            canvas,
             {
 
                 type: "doughnut",
@@ -1852,122 +2602,80 @@ function createUP3Chart() {
                         {
 
                             label:
-                                "Pekerjaan",
+                                "Jumlah Pekerjaan",
 
-                            data:
-                                values,
-
-                            borderWidth: 2
-
+                            data: values
                         }
 
                     ]
-
                 },
 
                 options: {
 
                     responsive: true,
 
-                    maintainAspectRatio: false,
-
-                    plugins: {
-
-                        legend: {
-
-                            position: "right",
-
-                            labels: {
-
-                                boxWidth: 12,
-
-                                font: {
-
-                                    size: 10
-
-                                }
-
-                            }
-
-                        }
-
-                    }
-
+                    maintainAspectRatio:
+                        false
                 }
-
             }
         );
 }
 
 
 /* =========================================================
-   GRAFIK 4
-   JENIS / NAMA PEKERJAAN
+   GRAFIK JENIS PEKERJAAN
 ========================================================= */
 
-function createJobChart() {
+function renderJobChart() {
 
-    destroyChart("job");
+    const canvas =
+        $("jobChart");
+
+
+    if (!canvas) {
+        return;
+    }
+
+
+    if (charts.job) {
+
+        charts.job.destroy();
+    }
 
 
     const counts = {};
 
 
-    DATA.forEach(row => {
+    DATA.forEach(
+        function(row) {
 
-        if (
-            row.job &&
-            row.job !== "-"
-        ) {
+            const job =
+                row.job ||
+                "Tidak diketahui";
 
-            counts[row.job] =
-                (counts[row.job] || 0) + 1;
 
+            counts[job] =
+                (counts[job] || 0) + 1;
         }
-
-    });
-
-
-    const entries =
-        Object.entries(counts)
-            .sort(
-                (a, b) =>
-                    b[1] - a[1]
-            )
-            .slice(0, 15);
+    );
 
 
     const labels =
-        entries.map(
-            item => item[0]
-        );
+        Object.keys(counts);
 
 
     const values =
-        entries.map(
-            item => item[1]
+        labels.map(
+            function(label) {
+
+                return counts[label];
+            }
         );
-
-
-    const canvas =
-        document.getElementById(
-            "jobChart"
-        );
-
-
-    if (!canvas) {
-
-        return;
-    }
-
-
-    const ctx =
-        canvas.getContext("2d");
 
 
     charts.job =
         new Chart(
-            ctx,
+            canvas,
             {
 
                 type: "bar",
@@ -1981,1060 +2689,678 @@ function createJobChart() {
                         {
 
                             label:
-                                "Jumlah",
+                                "Jumlah Pekerjaan",
 
-                            data:
-                                values,
-
-                            borderWidth: 1
-
+                            data: values
                         }
 
                     ]
-
                 },
 
                 options: {
 
                     responsive: true,
 
-                    maintainAspectRatio: false,
-
-                    indexAxis: "y",
-
-                    plugins: {
-
-                        legend: {
-
-                            display: false
-
-                        }
-
-                    },
-
-                    scales: {
-
-                        x: {
-
-                            beginAtZero: true,
-
-                            ticks: {
-
-                                precision: 0
-
-                            }
-
-                        }
-
-                    }
-
+                    maintainAspectRatio:
+                        false
                 }
-
             }
         );
 }
 
 
 /* =========================================================
-   RENDER SEMUA GRAFIK
-========================================================= */
-
-function renderCharts() {
-
-    if (!DATA.length) {
-
-        return;
-    }
-
-
-    createMonthlyChart();
-
-    createUnitChart();
-
-    createUP3Chart();
-
-    createJobChart();
-}
-
-
-/* =========================================================
-   NAVIGASI
-========================================================= */
-
-function showView(viewName) {
-
-    currentView =
-        viewName;
-
-
-    document
-        .querySelectorAll(".view")
-        .forEach(view => {
-
-            view.classList.toggle(
-                "active",
-                view.id ===
-                    `view-${viewName}`
-            );
-
-        });
-
-
-    document
-        .querySelectorAll(".nav-link")
-        .forEach(link => {
-
-            link.classList.toggle(
-                "active",
-                link.dataset.view ===
-                    viewName
-            );
-
-        });
-
-
-    const titles = {
-
-        dashboard:
-            "Dashboard",
-
-        monitoring:
-            "Monitoring Harian",
-
-        laporan:
-            "Data Laporan",
-
-        grafik:
-            "Visualisasi Grafik",
-
-        panduan:
-            "Panduan"
-
-    };
-
-
-    $("topbarTitle").textContent =
-        titles[viewName] ||
-        "Dashboard";
-
-
-    /*
-       Chart hanya digambar ulang
-       ketika halaman grafik dibuka.
-    */
-
-    if (
-        viewName === "grafik" &&
-        DATA.length
-    ) {
-
-        setTimeout(
-            renderCharts,
-            100
-        );
-    }
-
-
-    /*
-       Tutup sidebar mobile
-    */
-
-    if (
-        window.innerWidth <= 800
-    ) {
-
-        $("sidebar")
-            .classList.remove(
-                "open"
-            );
-    }
-}
-
-
-/* =========================================================
-   DRAWER
-========================================================= */
-
-function openDrawer() {
-
-    $("dataDrawer")
-        .classList.add(
-            "open"
-        );
-
-
-    $("drawerOverlay")
-        .classList.add(
-            "show"
-        );
-}
-
-
-function closeDrawer() {
-
-    $("dataDrawer")
-        .classList.remove(
-            "open"
-        );
-
-
-    $("drawerOverlay")
-        .classList.remove(
-            "show"
-        );
-}
-
-
-/* =========================================================
-   EXPORT CSV
-========================================================= */
-
-function exportCSV() {
-
-    if (!DATA.length) {
-
-        alert(
-            "Tidak ada data untuk diekspor."
-        );
-
-        return;
-    }
-
-
-    const rows =
-        DATA.map(row => ({
-
-            "Timestamp":
-                row.dateText,
-
-            "Unit UP3":
-                row.up3,
-
-            "Unit ULP":
-                row.ulp,
-
-            "NAMA PERANGKAT CCTV":
-                row.device,
-
-            "Nama Pekerjaan":
-                row.job,
-
-            "Lokasi Pekerjaan":
-                row.location,
-
-            "Petugas Pelaksana di Lapangan":
-                row.officer,
-
-            "Dokumentasi CCTV":
-                row.documentation
-
-        }));
-
-
-    const csv =
-        Papa.unparse(rows);
-
-
-    const blob =
-        new Blob(
-            [
-                "\uFEFF" +
-                csv
-            ],
-            {
-                type:
-                    "text/csv;charset=utf-8;"
-            }
-        );
-
-
-    const url =
-        URL.createObjectURL(blob);
-
-
-    const link =
-        document.createElement("a");
-
-
-    link.href =
-        url;
-
-
-    link.download =
-        `data-laporan-cctv-${getTodayFilename()}.csv`;
-
-
-    document.body.appendChild(link);
-
-    link.click();
-
-    link.remove();
-
-    URL.revokeObjectURL(url);
-}
-
-
-/* =========================================================
-   NAMA FILE EXPORT
-========================================================= */
-
-function getTodayFilename() {
-
-    const now =
-        new Date();
-
-
-    const year =
-        now.getFullYear();
-
-
-    const month =
-        String(
-            now.getMonth() + 1
-        ).padStart(2, "0");
-
-
-    const day =
-        String(
-            now.getDate()
-        ).padStart(2, "0");
-
-
-    return `${year}-${month}-${day}`;
-}
-
-
-/* =========================================================
-   LOAD FILE CSV / EXCEL
-========================================================= */
-
-async function loadLocalFile(file) {
-
-    if (!file) {
-
-        return;
-    }
-
-
-    setStatus(
-        `Membaca file ${file.name}...`
-    );
-
-
-    const extension =
-        file.name
-            .split(".")
-            .pop()
-            .toLowerCase();
-
-
-    try {
-
-        let rows = [];
-
-
-        if (extension === "csv") {
-
-            const text =
-                await file.text();
-
-
-            rows =
-                await parseCSV(text);
-
-        } else {
-
-            const buffer =
-                await file.arrayBuffer();
-
-
-            const workbook =
-                XLSX.read(
-                    buffer,
-                    {
-                        type: "array",
-                        cellDates: true
-                    }
-                );
-
-
-            const firstSheet =
-                workbook
-                    .Sheets[
-                        workbook.SheetNames[0]
-                    ];
-
-
-            rows =
-                XLSX.utils.sheet_to_json(
-                    firstSheet,
-                    {
-                        defval: ""
-                    }
-                );
-        }
-
-
-        DATA =
-            rows
-                .map(normalizeRow)
-                .filter(row => {
-
-                    return (
-                        row.timestamp !== "-" ||
-                        row.up3 !== "-" ||
-                        row.ulp !== "-" ||
-                        row.device !== "-"
-                    );
-                });
-
-
-        if (!DATA.length) {
-
-            throw new Error(
-                "Tidak ada data yang ditemukan."
-            );
-        }
-
-
-        afterDataLoaded(
-            `Berhasil memuat ${DATA.length} data dari file.`
-        );
-
-
-    } catch (error) {
-
-        console.error(error);
-
-        setStatus(
-            "Gagal membaca file: " +
-            error.message
-        );
-    }
-}
-
-
-/* =========================================================
-   DATA CONTOH
-========================================================= */
-
-function loadSampleData() {
-
-    const sample = [
-
-        {
-            Timestamp:
-                "15/09/2026 12:42:52",
-
-            "Unit UP3":
-                "UP3 Mamuju",
-
-            "Unit ULP":
-                "ULP Pasangkayu",
-
-            "NAMA PERANGKAT CCTV":
-                "ULP Pasangkayu",
-
-            "Nama Pekerjaan":
-                "Pembersihan Jaringan",
-
-            "Lokasi Pekerjaan":
-                "Pasangkayu",
-
-            "Petugas Pelaksana di Lapangan":
-                "Admin",
-
-            "Dokumentasi CCTV":
-                ""
-        },
-
-
-        {
-            Timestamp:
-                "15/09/2026 11:54:42",
-
-            "Unit UP3":
-                "UP3 Bulukumba",
-
-            "Unit ULP":
-                "ULP Sinjai",
-
-            "NAMA PERANGKAT CCTV":
-                "UP3BLK-ULP SINJAI",
-
-            "Nama Pekerjaan":
-                "Pemeriksaan CCTV",
-
-            "Lokasi Pekerjaan":
-                "Sinjai",
-
-            "Petugas Pelaksana di Lapangan":
-                "Petugas Lapangan",
-
-            "Dokumentasi CCTV":
-                ""
-        }
-
-    ];
-
-
-    DATA =
-        sample.map(
-            normalizeRow
-        );
-
-
-    afterDataLoaded(
-        "Data contoh berhasil dimuat."
-    );
-}
-
-
-/* =========================================================
-   CLEAR DATA
-========================================================= */
-
-function clearData() {
-
-    DATA = [];
-
-
-    localStorage.removeItem(
-        STORAGE_URL
-    );
-
-
-    $("totalData").textContent =
-        "0";
-
-    $("todayData").textContent =
-        "0";
-
-    $("totalCctv").textContent =
-        "0";
-
-    $("totalUnit").textContent =
-        "0";
-
-
-    $("dataActive").textContent =
-        "0";
-
-
-    $("dataStatus").textContent =
-        "Belum terhubung";
-
-
-    $("recentList").innerHTML =
-        `<div class="empty-state">
-            Belum ada data.
-         </div>`;
-
-
-    $("monitoringTable").innerHTML =
-        "";
-
-
-    $("laporanTable").innerHTML =
-        "";
-
-
-    destroyChart("line");
-
-    destroyChart("unit");
-
-
-    setStatus(
-        "Data telah dihapus."
-    );
-}
-
-
-/* =========================================================
-   GLOBAL SEARCH
-========================================================= */
-
-function globalSearch(value) {
-
-    if (!value.trim()) {
-
-        if (currentView === "monitoring") {
-
-            renderMonitoring();
-        }
-
-
-        if (currentView === "laporan") {
-
-            renderLaporan();
-        }
-
-        return;
-    }
-
-
-    /*
-       Jika sedang Dashboard,
-       arahkan pencarian ke Data Laporan.
-    */
-
-    if (
-        currentView === "dashboard"
-    ) {
-
-        showView("laporan");
-    }
-
-
-    if (
-        currentView === "monitoring"
-    ) {
-
-        renderMonitoring(value);
-    }
-
-
-    if (
-        currentView === "laporan"
-    ) {
-
-        renderLaporan(value);
-    }
-
-}
-
-
-/* =========================================================
-   EVENT LISTENER
+   DOM READY
 ========================================================= */
 
 document.addEventListener(
     "DOMContentLoaded",
-    () => {
+    async function() {
+
+        console.log(
+            "Website CCTV UID SSTB dimulai."
+        );
 
 
-        /* NAVIGATION */
+        /* -----------------------------------------
+           THEME
+        ----------------------------------------- */
+
+        loadTheme();
+
+
+        /* -----------------------------------------
+           NAVIGATION
+        ----------------------------------------- */
 
         document
             .querySelectorAll(
                 ".nav-link"
             )
-            .forEach(link => {
+            .forEach(
+                function(link) {
 
-                link.addEventListener(
-                    "click",
-                    event => {
+                    link.addEventListener(
+                        "click",
+                        function(event) {
 
-                        event.preventDefault();
-
-                        showView(
-                            link.dataset.view
-                        );
-
-                    }
-                );
-
-            });
+                            event.preventDefault();
 
 
-        /* Lihat semua */
+                            const view =
+                                this.dataset.view;
+
+
+                            if (!view) {
+                                return;
+                            }
+
+
+                            showView(
+                                view
+                            );
+                        }
+                    );
+                }
+            );
+
+
+        /* -----------------------------------------
+           TOMBOL DATA VIEW
+        ----------------------------------------- */
 
         document
             .querySelectorAll(
-                "[data-view-link]"
+                "[data-view-target]"
             )
-            .forEach(button => {
+            .forEach(
+                function(button) {
 
-                button.addEventListener(
-                    "click",
-                    () => {
+                    button.addEventListener(
+                        "click",
+                        function() {
 
-                        showView(
-                            button.dataset.viewLink
-                        );
-
-                    }
-                );
-
-            });
+                            const view =
+                                this.dataset.viewTarget;
 
 
-        /* SIDEBAR */
+                            if (view) {
 
-        $("sidebarToggle")
-            .addEventListener(
-                "click",
-                () => {
-
-                    $("sidebar")
-                        .classList.toggle(
-                            "open"
-                        );
-
-                }
-            );
-
-
-        $("mobileMenu")
-            .addEventListener(
-                "click",
-                () => {
-
-                    $("sidebar")
-                        .classList.toggle(
-                            "open"
-                        );
-
-                }
-            );
-
-
-        /* THEME */
-
-        $("themeToggle")
-            .addEventListener(
-                "click",
-                () => {
-
-                    document.body
-                        .classList.toggle(
-                            "dark"
-                        );
-
-
-                    const dark =
-                        document.body
-                            .classList
-                            .contains(
-                                "dark"
-                            );
-
-
-                    localStorage.setItem(
-                        "cctv_theme",
-                        dark
-                            ? "dark"
-                            : "light"
+                                showView(
+                                    view
+                                );
+                            }
+                        }
                     );
-
-
-                    $("themeToggle")
-                        .textContent =
-                            dark
-                                ? "☀"
-                                : "☾";
-
                 }
             );
 
 
-        /* SETTINGS */
+        /* -----------------------------------------
+           SEARCH GLOBAL
+        ----------------------------------------- */
 
-        $("settingsBtn")
-            .addEventListener(
-                "click",
-                openDrawer
-            );
-
-
-        $("settingsBtnLaporan")
-            .addEventListener(
-                "click",
-                openDrawer
-            );
+        const globalSearch =
+            $("globalSearch");
 
 
-        $("closeDrawer")
-            .addEventListener(
-                "click",
-                closeDrawer
-            );
+        if (globalSearch) {
 
+            globalSearch.addEventListener(
+                "input",
+                function() {
 
-        $("drawerOverlay")
-            .addEventListener(
-                "click",
-                closeDrawer
-            );
-
-
-        /* URL INPUT */
-
-        const savedUrl =
-            localStorage.getItem(
-                STORAGE_URL
-            );
-
-
-        $("csvUrlInput").value =
-            savedUrl ||
-            DEFAULT_CSV_URL;
-
-
-        /* LOAD URL */
-
-        $("loadUrlBtn")
-            .addEventListener(
-                "click",
-                async () => {
-
-                    try {
-
-                        await loadFromURL(
-                            $("csvUrlInput").value.trim()
-                        );
-
-                    } catch (error) {
-
-                        console.error(error);
-
-                        setStatus(
-                            "Gagal memuat data: " +
-                            error.message
-                        );
-                    }
-
+                    searchData(
+                        this.value
+                    );
                 }
             );
-
-
-        /* REFRESH */
-
-        async function refreshData() {
-
-            const url =
-                $("csvUrlInput")
-                    .value
-                    .trim();
-
-
-            try {
-
-                await loadFromURL(
-                    url,
-                    true
-                );
-
-            } catch (error) {
-
-                console.error(error);
-
-                setStatus(
-                    "Refresh gagal: " +
-                    error.message
-                );
-            }
         }
 
 
-        $("refreshBtn")
-            .addEventListener(
-                "click",
-                refreshData
-            );
+        /* -----------------------------------------
+           SEARCH LAPORAN
+        ----------------------------------------- */
+
+        const laporanSearch =
+            $("laporanSearch");
 
 
-        $("refreshBtnMain")
-            .addEventListener(
-                "click",
-                refreshData
-            );
+        if (laporanSearch) {
 
+            laporanSearch.addEventListener(
+                "input",
+                function() {
 
-        /* FILE */
-
-        $("fileInput")
-            .addEventListener(
-                "change",
-                event => {
-
-                    const file =
-                        event.target
-                            .files[0];
-
-                    loadLocalFile(file);
-
+                    searchData(
+                        this.value
+                    );
                 }
             );
+        }
 
 
-        /* PASTE */
+        /* -----------------------------------------
+           SEARCH MONITORING
+        ----------------------------------------- */
 
-        $("loadPasteBtn")
-            .addEventListener(
-                "click",
-                async () => {
+        const monitoringSearch =
+            $("monitoringSearch");
 
-                    const text =
-                        $("csvPasteInput")
-                            .value
+
+        if (monitoringSearch) {
+
+            monitoringSearch.addEventListener(
+                "input",
+                function() {
+
+                    const keyword =
+                        this.value
+                            .toLowerCase()
                             .trim();
 
 
-                    if (!text) {
+                    if (!keyword) {
+
+                        renderMonitoring();
+
+                        return;
+                    }
+
+
+                    const filtered =
+                        DATA.filter(
+                            function(row) {
+
+                                const text = [
+
+                                    row.dateText,
+
+                                    row.up3,
+
+                                    row.ulp,
+
+                                    row.device,
+
+                                    row.job,
+
+                                    row.location,
+
+                                    row.officer
+
+                                ]
+                                    .join(" ")
+                                    .toLowerCase();
+
+
+                                return text.includes(
+                                    keyword
+                                );
+                            }
+                        );
+
+
+                    const tbody =
+                        $("monitoringTable");
+
+
+                    if (!tbody) {
+                        return;
+                    }
+
+
+                    tbody.innerHTML = "";
+
+
+                    filtered.forEach(
+                        function(row, index) {
+
+                            const tr =
+                                document.createElement(
+                                    "tr"
+                                );
+
+
+                            tr.innerHTML = `
+
+                                <td>
+                                    ${index + 1}
+                                </td>
+
+                                <td>
+                                    ${escapeHTML(
+                                        row.dateText || "-"
+                                    )}
+                                </td>
+
+                                <td>
+                                    ${escapeHTML(
+                                        row.up3 || "-"
+                                    )}
+                                </td>
+
+                                <td>
+                                    ${escapeHTML(
+                                        row.ulp || "-"
+                                    )}
+                                </td>
+
+                                <td>
+                                    ${escapeHTML(
+                                        row.device || "-"
+                                    )}
+                                </td>
+
+                                <td>
+                                    ${escapeHTML(
+                                        row.job || "-"
+                                    )}
+                                </td>
+
+                                <td>
+                                    ${escapeHTML(
+                                        row.location || "-"
+                                    )}
+                                </td>
+
+                                <td>
+                                    ${escapeHTML(
+                                        row.officer || "-"
+                                    )}
+                                </td>
+
+                            `;
+
+
+                            tbody.appendChild(
+                                tr
+                            );
+                        }
+                    );
+                }
+            );
+        }
+
+
+        /* -----------------------------------------
+           THEME BUTTON
+        ----------------------------------------- */
+
+        const themeButton =
+            $("themeToggle");
+
+
+        if (themeButton) {
+
+            themeButton.addEventListener(
+                "click",
+                toggleTheme
+            );
+        }
+
+
+        /* -----------------------------------------
+           MOBILE MENU
+        ----------------------------------------- */
+
+        const mobileMenu =
+            $("mobileMenu");
+
+
+        const sidebar =
+            $("sidebar");
+
+
+        if (
+            mobileMenu &&
+            sidebar
+        ) {
+
+            mobileMenu.addEventListener(
+                "click",
+                function() {
+
+                    sidebar.classList.toggle(
+                        "open"
+                    );
+                }
+            );
+        }
+
+
+        /* -----------------------------------------
+           MODAL CLOSE
+        ----------------------------------------- */
+
+        const closeModal =
+            $("closeEditModal");
+
+
+        if (closeModal) {
+
+            closeModal.addEventListener(
+                "click",
+                closeEditModal
+            );
+        }
+
+
+        /* -----------------------------------------
+           MODAL CANCEL
+        ----------------------------------------- */
+
+        const cancelButton =
+            $("cancelEditBtn");
+
+
+        if (cancelButton) {
+
+            cancelButton.addEventListener(
+                "click",
+                closeEditModal
+            );
+        }
+
+
+        /* -----------------------------------------
+           FORM EDIT
+        ----------------------------------------- */
+
+        const editForm =
+            $("editForm");
+
+
+        if (editForm) {
+
+            editForm.addEventListener(
+                "submit",
+                saveEdit
+            );
+        }
+
+
+        /* -----------------------------------------
+           KLIK LUAR MODAL
+        ----------------------------------------- */
+
+        const editModal =
+            $("editModal");
+
+
+        if (editModal) {
+
+            editModal.addEventListener(
+                "click",
+                function(event) {
+
+                    if (
+                        event.target ===
+                        editModal
+                    ) {
+
+                        closeEditModal();
+                    }
+                }
+            );
+        }
+
+
+        /* -----------------------------------------
+           SETTINGS DRAWER
+        ----------------------------------------- */
+
+        const settingsBtn =
+            $("settingsBtn");
+
+
+        const settingsBtnLaporan =
+            $("settingsBtnLaporan");
+
+
+        const drawerOverlay =
+            $("drawerOverlay");
+
+
+        const closeDrawer =
+            $("closeDrawer");
+
+
+        if (
+            settingsBtn &&
+            drawerOverlay
+        ) {
+
+            settingsBtn.addEventListener(
+                "click",
+                function() {
+
+                    drawerOverlay.classList.add(
+                        "active"
+                    );
+                }
+            );
+        }
+
+
+        if (
+            settingsBtnLaporan &&
+            drawerOverlay
+        ) {
+
+            settingsBtnLaporan.addEventListener(
+                "click",
+                function() {
+
+                    drawerOverlay.classList.add(
+                        "active"
+                    );
+                }
+            );
+        }
+
+
+        if (closeDrawer) {
+
+            closeDrawer.addEventListener(
+                "click",
+                function() {
+
+                    drawerOverlay.classList.remove(
+                        "active"
+                    );
+                }
+            );
+        }
+
+
+        if (drawerOverlay) {
+
+            drawerOverlay.addEventListener(
+                "click",
+                function(event) {
+
+                    if (
+                        event.target ===
+                        drawerOverlay
+                    ) {
+
+                        drawerOverlay.classList.remove(
+                            "active"
+                        );
+                    }
+                }
+            );
+        }
+
+
+        /* -----------------------------------------
+           LOAD URL BUTTON
+        ----------------------------------------- */
+
+        const loadUrlBtn =
+            $("loadUrlBtn");
+
+
+        const csvUrlInput =
+            $("csvUrlInput");
+
+
+        const statusMsg =
+            $("statusMsg");
+
+
+        if (csvUrlInput) {
+
+            csvUrlInput.value =
+                localStorage.getItem(
+                    STORAGE_URL
+                ) ||
+                DEFAULT_CSV_URL;
+        }
+
+
+        if (loadUrlBtn) {
+
+            loadUrlBtn.addEventListener(
+                "click",
+                async function() {
+
+                    const url =
+                        csvUrlInput
+                            ? csvUrlInput.value.trim()
+                            : "";
+
+
+                    if (!url) {
 
                         alert(
-                            "Tempel data CSV terlebih dahulu."
+                            "URL Google Sheets belum diisi."
                         );
 
                         return;
                     }
 
 
-                    try {
+                    if (statusMsg) {
 
-                        const rows =
-                            await parseCSV(
-                                text
-                            );
-
-
-                        DATA =
-                            rows
-                                .map(
-                                    normalizeRow
-                                )
-                                .filter(
-                                    row =>
-                                        row.timestamp !== "-" ||
-                                        row.up3 !== "-" ||
-                                        row.ulp !== "-" ||
-                                        row.device !== "-"
-                                );
-
-
-                        afterDataLoaded(
-                            `Berhasil memuat ${DATA.length} data.`
-                        );
-
-
-                    } catch (error) {
-
-                        setStatus(
-                            "Gagal membaca CSV."
-                        );
+                        statusMsg.textContent =
+                            "Menghubungkan...";
                     }
 
+
+                    const success =
+                        await loadFromURL(
+                            url
+                        );
+
+
+                    if (statusMsg) {
+
+                        statusMsg.textContent =
+                            success
+                                ? "Data berhasil terhubung."
+                                : "Gagal menghubungkan data.";
+                    }
                 }
             );
-
-
-        /* SAMPLE */
-
-        $("sampleBtn")
-            .addEventListener(
-                "click",
-                loadSampleData
-            );
-
-
-        /* CLEAR */
-
-        $("clearBtn")
-            .addEventListener(
-                "click",
-                clearData
-            );
-
-
-        /* EXPORT */
-
-        $("exportBtn")
-            .addEventListener(
-                "click",
-                exportCSV
-            );
-
-
-        /* SEARCH MONITORING */
-
-        $("monitoringSearch")
-            .addEventListener(
-                "input",
-                event => {
-
-                    renderMonitoring(
-                        event.target.value
-                    );
-
-                }
-            );
-
-
-        /* SEARCH LAPORAN */
-
-        $("laporanSearch")
-            .addEventListener(
-                "input",
-                event => {
-
-                    renderLaporan(
-                        event.target.value
-                    );
-
-                }
-            );
-
-
-        /* GLOBAL SEARCH */
-
-        $("globalSearch")
-            .addEventListener(
-                "input",
-                event => {
-
-                    globalSearch(
-                        event.target.value
-                    );
-
-                }
-            );
-
-
-        /* THEME SAVED */
-
-        const savedTheme =
-            localStorage.getItem(
-                "cctv_theme"
-            );
-
-
-        if (
-            savedTheme === "dark"
-        ) {
-
-            document.body
-                .classList
-                .add("dark");
-
-
-            $("themeToggle")
-                .textContent = "☀";
         }
 
 
-        /*
-           LOAD DATA OTOMATIS
-        */
+        /* -----------------------------------------
+           REFRESH
+        ----------------------------------------- */
 
-        loadFromURL(
-            savedUrl ||
-            DEFAULT_CSV_URL,
-            false
-        )
-        .catch(error => {
+        const refreshBtn =
+            $("refreshBtnMain");
 
-            console.warn(
-                "Data otomatis gagal dimuat:",
-                error
+
+        if (refreshBtn) {
+
+            refreshBtn.addEventListener(
+                "click",
+                async function() {
+
+                    refreshBtn.disabled =
+                        true;
+
+
+                    refreshBtn.textContent =
+                        "↻ Memuat...";
+
+
+                    const url =
+                        localStorage.getItem(
+                            STORAGE_URL
+                        ) ||
+                        DEFAULT_CSV_URL;
+
+
+                    await loadFromURL(
+                        url
+                    );
+
+
+                    refreshBtn.disabled =
+                        false;
+
+
+                    refreshBtn.textContent =
+                        "↻ Refresh";
+                }
+            );
+        }
+
+
+        /* -----------------------------------------
+           LOAD DATA AWAL
+        ----------------------------------------- */
+
+        const savedURL =
+            localStorage.getItem(
+                STORAGE_URL
             );
 
 
-            setStatus(
-                "Belum berhasil terhubung ke Spreadsheet. Gunakan tombol ⚙ untuk mencoba lagi."
-            );
+        const csvURL =
+            savedURL ||
+            DEFAULT_CSV_URL;
 
-        });
 
+        console.log(
+            "CSV URL:",
+            csvURL
+        );
+
+
+        console.log(
+            "API URL:",
+            DEFAULT_API_URL
+        );
+
+
+        await loadFromURL(
+            csvURL
+        );
+
+
+        console.log(
+            "Website selesai dimuat."
+        );
     }
 );
+
+
+/* =========================================================
+   AGAR onclick HTML BISA MEMANGGIL EDIT
+========================================================= */
+
+window.openEditModal =
+    openEditModal;
+
+
+window.closeEditModal =
+    closeEditModal;
+
+
+window.saveEdit =
+    saveEdit;
