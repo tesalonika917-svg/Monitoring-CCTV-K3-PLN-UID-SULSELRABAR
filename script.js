@@ -15,7 +15,7 @@ const STORAGE_URL =
  * kembali ke Google Spreadsheet.
  */
 const DEFAULT_API_URL =
-    "https://script.google.com/macros/s/AKfycbxiaoLeSUzCCwRTE38__2RDU5NLK-QGi_Y0TDuIE7FAyGGUs_OlEgk3IpDBaqqKwiYt/exec";
+    "https://script.google.com/macros/s/AKfycbyYQ6Y472HiCSD0TJl-ejeU-Lb0vPSs__fAK_eUxJWhHePr_S63tM58GfMD_JXONOGL/exec";
 
 
 /* =========================================================
@@ -27,6 +27,30 @@ let DATA = [];
 let currentEditingRow = null;
 
 let charts = {};
+
+/*
+ * Penanda proses simpan sedang berjalan,
+ * untuk mencegah klik ganda (double submit)
+ * mengirim dua request bersamaan ke Apps Script.
+ */
+let isSavingEdit = false;
+
+/*
+ * Ringkasan Jumlah CCTV & Unit.
+ *
+ * - totalUnit bersifat TETAP/MANUAL (61), jadi
+ *   langsung diisi 61 dari awal, tidak menunggu
+ *   respons Apps Script. Kalaupun API gagal total,
+ *   angka Unit tetap tampil benar.
+ *
+ * - totalCctv diambil dari tab "MONITORING CCTV"
+ *   (kolom "Implementasi") lewat Apps Script (doGet),
+ *   bukan dari tab laporan (Form Responses 1).
+ */
+let CCTV_SUMMARY = {
+    totalCctv: 0,
+    totalUnit: 61
+};
 
 
 /* =========================================================
@@ -113,22 +137,23 @@ function parseDate(value) {
 
 
     /* -----------------------------------------
-       Format ISO / Google Sheets
-    ----------------------------------------- */
-
-    let date = new Date(text);
-
-    if (!isNaN(date.getTime())) {
-        return date;
-    }
-
-
-    /* -----------------------------------------
-       Format Indonesia
+       Format Indonesia (dicek LEBIH DULU)
 
        dd/mm/yyyy
        dd/mm/yyyy hh:mm
        dd/mm/yyyy hh:mm:ss
+
+       PENTING:
+       Timestamp dari Google Sheets dengan locale
+       Indonesia memakai format dd/mm/yyyy. Kalau
+       kita coba new Date(text) duluan, JavaScript
+       akan salah membacanya sebagai mm/dd/yyyy
+       (gaya Amerika), sehingga tanggal & bulan
+       tertukar (misalnya 12/09/2026 yang seharusnya
+       12 September malah terbaca 9 Desember).
+
+       Karena itu, pola dd/mm/yyyy dicek & diprioritaskan
+       lebih dulu di sini sebelum fallback ke new Date().
     ----------------------------------------- */
 
     const match = text.match(
@@ -155,18 +180,33 @@ function parseDate(value) {
         const second =
             Number(match[6] || 0);
 
-        date = new Date(
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second
-        );
+        const parsedDate =
+            new Date(
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second
+            );
 
-        if (!isNaN(date.getTime())) {
-            return date;
+        if (!isNaN(parsedDate.getTime())) {
+            return parsedDate;
         }
+    }
+
+
+    /* -----------------------------------------
+       Format ISO / lainnya (fallback)
+
+       Dipakai untuk format yang tidak ambigu,
+       misalnya "2026-09-16T10:00:00.000Z".
+    ----------------------------------------- */
+
+    const date = new Date(text);
+
+    if (!isNaN(date.getTime())) {
+        return date;
     }
 
 
@@ -682,6 +722,137 @@ async function loadFromURL(url) {
 
 
 /* =========================================================
+   AMBIL RINGKASAN CCTV DARI TAB "MONITORING CCTV"
+
+   Berbeda dari loadFromURL() yang membaca CSV publish
+   tab "Form Responses 1", ringkasan ini diambil langsung
+   dari Apps Script (doGet) karena datanya ada di tab lain
+   dan supaya tidak perlu publish-to-web terpisah.
+========================================================= */
+
+async function loadCctvSummary() {
+
+    try {
+
+        const response =
+            await fetch(
+                DEFAULT_API_URL,
+                {
+                    cache: "no-store"
+                }
+            );
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                "HTTP " +
+                response.status
+            );
+        }
+
+
+        const text =
+            await response.text();
+
+
+        const result =
+            JSON.parse(
+                text
+            );
+
+
+        if (
+            result &&
+            result.cctvSummary
+        ) {
+
+            /*
+             * Unit selalu diambil dari server kalau ada
+             * (server juga mengirim angka manual 61),
+             * dengan fallback 61 kalau field-nya kosong.
+             * Ini tetap dilakukan walau success:false,
+             * supaya KPI Unit tidak ikut kosong hanya
+             * karena Total CCTV gagal dihitung.
+             */
+
+            CCTV_SUMMARY.totalUnit =
+                Number(
+                    result.cctvSummary.totalUnit
+                ) || 61;
+
+
+            if (result.cctvSummary.success) {
+
+                CCTV_SUMMARY.totalCctv =
+                    Number(
+                        result.cctvSummary.totalCctv
+                    ) || 0;
+
+            } else {
+
+                console.error(
+                    "Gagal menghitung Total CCTV:",
+                    result.cctvSummary.message,
+                    "\nKolom yang tersedia di tab MONITORING CCTV:",
+                    result.cctvSummary.availableHeaders
+                );
+            }
+
+
+        } else {
+
+            console.warn(
+                "Ringkasan CCTV tidak tersedia. " +
+                "Cek apakah URL Apps Script (DEFAULT_API_URL) " +
+                "sudah benar dan deployment-nya sudah versi terbaru.",
+                result
+            );
+        }
+
+
+        renderDashboard();
+
+
+    } catch (error) {
+
+        console.warn(
+            "Gagal memuat ringkasan CCTV:",
+            error
+        );
+    }
+}
+
+
+/* =========================================================
+   URUTKAN DATA TERBARU LEBIH DULU
+========================================================= */
+
+function getSortedByDateDesc(rows) {
+
+    return [...rows].sort(
+        function(a, b) {
+
+            const dateA =
+                a.dateObject
+                    ? a.dateObject.getTime()
+                    : 0;
+
+            const dateB =
+                b.dateObject
+                    ? b.dateObject.getTime()
+                    : 0;
+
+            return (
+                dateB -
+                dateA
+            );
+        }
+    );
+}
+
+
+/* =========================================================
    RENDER DATA LAPORAN
 ========================================================= */
 
@@ -729,7 +900,13 @@ function renderLaporan() {
     }
 
 
-    DATA.forEach(
+    const sortedData =
+        getSortedByDateDesc(
+            DATA
+        );
+
+
+    sortedData.forEach(
         function(row, index) {
 
             const tr =
@@ -857,7 +1034,7 @@ function renderLaporan() {
 
 
     updateResultCount(
-        DATA.length
+        sortedData.length
     );
 }
 
@@ -922,7 +1099,13 @@ function renderMonitoring() {
     }
 
 
-    DATA.forEach(
+    const sortedMonitoring =
+        getSortedByDateDesc(
+            DATA
+        );
+
+
+    sortedMonitoring.forEach(
         function(row, index) {
 
             const tr =
@@ -1021,7 +1204,7 @@ function renderDashboard() {
         );
 
 
-    const todayCount =
+    const todayRows =
         DATA.filter(
             function(row) {
 
@@ -1030,7 +1213,11 @@ function renderDashboard() {
                     today
                 );
             }
-        ).length;
+        );
+
+
+    const todayCount =
+        todayRows.length;
 
 
     const todayData =
@@ -1045,21 +1232,8 @@ function renderDashboard() {
 
 
     /* -----------------------------------------
-       JUMLAH CCTV
+       JUMLAH CCTV (dari tab "MONITORING CCTV")
     ----------------------------------------- */
-
-    const cctv =
-        new Set(
-            DATA
-                .map(
-                    function(row) {
-
-                        return row.device;
-                    }
-                )
-                .filter(Boolean)
-        );
-
 
     const totalCctv =
         $("totalCctv");
@@ -1068,17 +1242,50 @@ function renderDashboard() {
     if (totalCctv) {
 
         totalCctv.textContent =
-            cctv.size;
+            CCTV_SUMMARY.totalCctv;
     }
 
 
     /* -----------------------------------------
-       JUMLAH UNIT
+       JUMLAH UNIT (dari tab "MONITORING CCTV")
     ----------------------------------------- */
 
-    const units =
+    const totalUnit =
+        $("totalUnit");
+
+
+    if (totalUnit) {
+
+        totalUnit.textContent =
+            CCTV_SUMMARY.totalUnit;
+    }
+
+
+    /* -----------------------------------------
+       CCTV ON / OFF
+
+       PENTING (diperbarui):
+
+       ON dihitung dari ULP UNIK yang melapor
+       PADA HARI INI SAJA (tab "Form Responses 1",
+       kolom "Unit ULP"), bukan sepanjang waktu.
+       Berapa kali pun 1 ULP mengajukan laporan
+       dalam hari yang sama (misalnya 3 laporan
+       hari ini), ULP tersebut tetap dihitung 1
+       kali saja untuk status ON hari itu.
+
+       Laporan itu sendiri tetap terekap seluruhnya
+       (tidak dikurangi/di-dedupe) di "Total Laporan"
+       sesuai jumlah pelaporan yang sebenarnya masuk.
+
+       OFF = Total CCTV (dari tab "MONITORING CCTV",
+       kolom "Implementasi") dikurangi jumlah yang ON
+       hari ini.
+    ----------------------------------------- */
+
+    const uniqueReportedUlpToday =
         new Set(
-            DATA
+            todayRows
                 .map(
                     function(row) {
 
@@ -1089,14 +1296,37 @@ function renderDashboard() {
         );
 
 
-    const totalUnit =
-        $("totalUnit");
+    const cctvOnCount =
+        uniqueReportedUlpToday.size;
 
 
-    if (totalUnit) {
+    const cctvOffCount =
+        Math.max(
+            0,
+            CCTV_SUMMARY.totalCctv -
+                cctvOnCount
+        );
 
-        totalUnit.textContent =
-            units.size;
+
+    const cctvOn =
+        $("cctvOn");
+
+
+    if (cctvOn) {
+
+        cctvOn.textContent =
+            cctvOnCount;
+    }
+
+
+    const cctvOff =
+        $("cctvOff");
+
+
+    if (cctvOff) {
+
+        cctvOff.textContent =
+            cctvOffCount;
     }
 
 
@@ -1476,12 +1706,233 @@ function closeEditModal() {
 
 
 /* =========================================================
+   TERAPKAN HASIL SIMPAN KE MEMORY & UI
+========================================================= */
+
+function applyEditSavedLocally(
+    description,
+    findingTime,
+    findingDocumentation,
+    followUp,
+    information
+) {
+
+    currentEditingRow.description =
+        description;
+
+
+    currentEditingRow.findingTime =
+        findingTime;
+
+
+    currentEditingRow.findingDocumentation =
+        findingDocumentation;
+
+
+    currentEditingRow.followUp =
+        followUp;
+
+
+    currentEditingRow.information =
+        information;
+
+
+    if (
+        currentEditingRow.original
+    ) {
+
+        currentEditingRow.original[
+            "Deskripsi Temuan (Jika Ada)"
+        ] =
+            description;
+
+
+        currentEditingRow.original[
+            "Waktu Temuan"
+        ] =
+            findingTime;
+
+
+        currentEditingRow.original[
+            "Dokumentasi Temuan"
+        ] =
+            findingDocumentation;
+
+
+        currentEditingRow.original[
+            "Tindak Lanjut (Tegur online, CMC, dsb)"
+        ] =
+            followUp;
+
+
+        currentEditingRow.original[
+            "Keterangan"
+        ] =
+            information;
+    }
+
+
+    closeEditModal();
+
+
+    renderLaporan();
+
+    renderDashboard();
+}
+
+
+/* =========================================================
+   VERIFIKASI ULANG KE SPREADSHEET
+
+   Dipakai saat balasan dari Apps Script gagal
+   dibaca (bukan JSON valid / koneksi terputus
+   di tengah jalan), padahal SANGAT MUNGKIN
+   doPost() di server sudah berhasil jalan dan
+   datanya sudah tersimpan. Google Apps Script
+   Web App memang kadang begitu: server sudah
+   selesai memproses, tapi balasannya ke browser
+   gagal terbaca dengan baik.
+
+   Fungsi ini mengambil ulang data langsung dari
+   spreadsheet (lewat doGet, bukan CSV publish
+   yang bisa delay), lalu membandingkan baris
+   terkait dengan data yang barusan dikirim.
+========================================================= */
+
+async function verifyEditSaved(
+    rowNumber,
+    expectedData
+) {
+
+    try {
+
+        const response =
+            await fetch(
+                DEFAULT_API_URL,
+                {
+                    cache: "no-store"
+                }
+            );
+
+
+        if (!response.ok) {
+
+            return false;
+        }
+
+
+        const text =
+            await response.text();
+
+
+        let result;
+
+
+        try {
+
+            result =
+                JSON.parse(
+                    text
+                );
+
+        } catch (parseError) {
+
+            return false;
+        }
+
+
+        if (
+            !result ||
+            !result.success ||
+            !Array.isArray(
+                result.rows
+            )
+        ) {
+
+            return false;
+        }
+
+
+        const row =
+            result.rows.find(
+                function(item) {
+
+                    return (
+                        Number(
+                            item._row
+                        ) ===
+                        Number(
+                            rowNumber
+                        )
+                    );
+                }
+            );
+
+
+        if (!row) {
+
+            return false;
+        }
+
+
+        const keys =
+            Object.keys(
+                expectedData
+            );
+
+
+        return keys.every(
+            function(key) {
+
+                const actual =
+                    row[key] !==
+                    undefined
+                        ? String(
+                              row[key]
+                          ).trim()
+                        : "";
+
+                const expected =
+                    String(
+                        expectedData[
+                            key
+                        ] || ""
+                    ).trim();
+
+                return (
+                    actual ===
+                    expected
+                );
+            }
+        );
+
+
+    } catch (error) {
+
+        return false;
+    }
+}
+
+
+/* =========================================================
    SIMPAN EDIT KE GOOGLE SHEETS
 ========================================================= */
 
 async function saveEdit(event) {
 
     event.preventDefault();
+
+
+    /*
+     * Cegah klik ganda: kalau proses simpan
+     * sebelumnya masih berjalan, abaikan
+     * pemanggilan berikutnya sampai selesai.
+     */
+
+    if (isSavingEdit) {
+
+        return;
+    }
 
 
     if (!currentEditingRow) {
@@ -1644,6 +2095,10 @@ async function saveEdit(event) {
     }
 
 
+    isSavingEdit =
+        true;
+
+
     try {
 
         /*
@@ -1720,82 +2175,16 @@ async function saveEdit(event) {
 
 
         /* -----------------------------------------
-           UPDATE MEMORY
+           UPDATE MEMORY, DATA ASLI, MODAL, RENDER
         ----------------------------------------- */
 
-        currentEditingRow.description =
-            description;
-
-
-        currentEditingRow.findingTime =
-            findingTime;
-
-
-        currentEditingRow.findingDocumentation =
-            findingDocumentation;
-
-
-        currentEditingRow.followUp =
-            followUp;
-
-
-        currentEditingRow.information =
-            information;
-
-
-        /* -----------------------------------------
-           UPDATE DATA ASLI
-        ----------------------------------------- */
-
-        if (
-            currentEditingRow.original
-        ) {
-
-            currentEditingRow.original[
-                "Deskripsi Temuan (Jika Ada)"
-            ] =
-                description;
-
-
-            currentEditingRow.original[
-                "Waktu Temuan"
-            ] =
-                findingTime;
-
-
-            currentEditingRow.original[
-                "Dokumentasi Temuan"
-            ] =
-                findingDocumentation;
-
-
-            currentEditingRow.original[
-                "Tindak Lanjut (Tegur online, CMC, dsb)"
-            ] =
-                followUp;
-
-
-            currentEditingRow.original[
-                "Keterangan"
-            ] =
-                information;
-        }
-
-
-        /* -----------------------------------------
-           TUTUP MODAL
-        ----------------------------------------- */
-
-        closeEditModal();
-
-
-        /* -----------------------------------------
-           RENDER ULANG
-        ----------------------------------------- */
-
-        renderLaporan();
-
-        renderDashboard();
+        applyEditSavedLocally(
+            description,
+            findingTime,
+            findingDocumentation,
+            followUp,
+            information
+        );
 
 
         alert(
@@ -1817,15 +2206,59 @@ async function saveEdit(event) {
         );
 
 
-        alert(
-            "Data gagal disimpan ke Google Spreadsheet.\n\n" +
-            error.message +
-            "\n\n" +
-            "Periksa deployment Google Apps Script dan URL /exec."
-        );
+        /* -----------------------------------------
+           VERIFIKASI ULANG SEBELUM MENYERAH
+
+           Balasan dari Apps Script kadang gagal
+           terbaca padahal server sudah berhasil
+           menyimpan datanya. Sebelum menampilkan
+           pesan gagal, cek dulu langsung ke
+           spreadsheet apakah datanya sudah cocok.
+        ----------------------------------------- */
+
+        const reallySaved =
+            await verifyEditSaved(
+                rowNumber,
+                payload.data
+            );
+
+
+        if (reallySaved) {
+
+            applyEditSavedLocally(
+                description,
+                findingTime,
+                findingDocumentation,
+                followUp,
+                information
+            );
+
+
+            alert(
+                "Data berhasil disimpan ke Google Spreadsheet."
+            );
+
+
+            console.log(
+                "Data terverifikasi tersimpan meski response awal gagal dibaca."
+            );
+
+        } else {
+
+            alert(
+                "Data gagal disimpan ke Google Spreadsheet.\n\n" +
+                error.message +
+                "\n\n" +
+                "Periksa deployment Google Apps Script dan URL /exec."
+            );
+        }
 
 
     } finally {
+
+        isSavingEdit =
+            false;
+
 
         if (saveButton) {
 
@@ -1988,7 +2421,13 @@ function renderFilteredLaporan(
     }
 
 
-    filteredRows.forEach(
+    const sortedRows =
+        getSortedByDateDesc(
+            filteredRows
+        );
+
+
+    sortedRows.forEach(
         function(row, index) {
 
             const tr =
@@ -2088,7 +2527,7 @@ function renderFilteredLaporan(
 
 
     updateResultCount(
-        filteredRows.length
+        sortedRows.length
     );
 }
 
@@ -2235,6 +2674,165 @@ function toggleTheme() {
 
 
 /* =========================================================
+   FILTER GRAFIK — BULAN TERSEDIA DARI SPREADSHEET
+========================================================= */
+
+function getAvailableMonths() {
+
+    const months =
+        new Set();
+
+
+    DATA.forEach(
+        function(row) {
+
+            if (!row.dateObject) {
+                return;
+            }
+
+
+            const key =
+                `${row.dateObject.getFullYear()}-${String(
+                    row.dateObject.getMonth() + 1
+                ).padStart(2, "0")}`;
+
+
+            months.add(key);
+        }
+    );
+
+
+    return Array.from(months).sort();
+}
+
+
+function getLatestAvailableMonth() {
+
+    const months =
+        getAvailableMonths();
+
+
+    return (
+        months[months.length - 1] || ""
+    );
+}
+
+
+/* =========================================================
+   SIAPKAN INPUT FILTER GRAFIK (HARI & BULAN)
+========================================================= */
+
+function setupChartFilters() {
+
+    const availableMonths =
+        getAvailableMonths();
+
+    if (!availableMonths.length) {
+        return;
+    }
+
+
+    const minMonth =
+        availableMonths[0];
+
+    const maxMonth =
+        availableMonths[
+            availableMonths.length - 1
+        ];
+
+
+    /* -----------------------------------------
+       FILTER BULAN — GRAFIK PEKERJAAN PER HARI
+    ----------------------------------------- */
+
+    const dailyMonthInput =
+        $("dailyChartMonth");
+
+
+    if (dailyMonthInput) {
+
+        dailyMonthInput.min =
+            minMonth;
+
+        dailyMonthInput.max =
+            maxMonth;
+
+
+        /*
+         * Hanya isi nilai default jika input
+         * masih kosong atau di luar rentang data,
+         * agar pilihan user tidak tertimpa
+         * setiap kali data di-refresh.
+         */
+
+        if (
+            !dailyMonthInput.value ||
+            !availableMonths.includes(
+                dailyMonthInput.value
+            )
+        ) {
+
+            dailyMonthInput.value =
+                maxMonth;
+        }
+    }
+
+
+    /* -----------------------------------------
+       FILTER RENTANG — GRAFIK PEKERJAAN PER BULAN
+    ----------------------------------------- */
+
+    const monthlyFromInput =
+        $("monthlyChartFrom");
+
+    const monthlyToInput =
+        $("monthlyChartTo");
+
+
+    if (monthlyFromInput) {
+
+        monthlyFromInput.min =
+            minMonth;
+
+        monthlyFromInput.max =
+            maxMonth;
+
+
+        if (
+            !monthlyFromInput.value ||
+            monthlyFromInput.value < minMonth ||
+            monthlyFromInput.value > maxMonth
+        ) {
+
+            monthlyFromInput.value =
+                minMonth;
+        }
+    }
+
+
+    if (monthlyToInput) {
+
+        monthlyToInput.min =
+            minMonth;
+
+        monthlyToInput.max =
+            maxMonth;
+
+
+        if (
+            !monthlyToInput.value ||
+            monthlyToInput.value < minMonth ||
+            monthlyToInput.value > maxMonth
+        ) {
+
+            monthlyToInput.value =
+                maxMonth;
+        }
+    }
+}
+
+
+/* =========================================================
    GRAFIK
 ========================================================= */
 
@@ -2253,6 +2851,9 @@ function renderCharts() {
     }
 
 
+    setupChartFilters();
+
+
     renderDailyChart();
 
     renderMonthlyChart();
@@ -2262,6 +2863,186 @@ function renderCharts() {
     renderUp3Chart();
 
     renderJobChart();
+
+    renderDashboardUnitChart();
+
+    renderDashboardUp3Chart();
+}
+
+
+/* =========================================================
+   GRAFIK RINGKAS DI DASHBOARD
+========================================================= */
+
+function renderDashboardChart() {
+
+    const canvas =
+        $("dashboardChart");
+
+
+    if (!canvas) {
+        return;
+    }
+
+
+    if (charts.dashboard) {
+
+        charts.dashboard.destroy();
+    }
+
+
+    const counts = {};
+
+
+    DATA.forEach(
+        function(row) {
+
+            /*
+             * Hanya hitung baris yang benar-benar
+             * memiliki tanggal valid dari spreadsheet.
+             */
+
+            if (
+                !row.dateObject ||
+                !row.dateOnly ||
+                row.dateOnly === "-"
+            ) {
+                return;
+            }
+
+
+            const date =
+                row.dateOnly;
+
+
+            counts[date] =
+                (counts[date] || 0) + 1;
+        }
+    );
+
+
+    /*
+     * Urutkan berdasarkan tanggal (dd/mm/yyyy)
+     * dan ambil 14 hari terakhir agar grafik
+     * tetap ringkas dan mudah dibaca.
+     */
+
+    const entries =
+        Object.keys(counts)
+            .map(
+                function(label) {
+
+                    const parts =
+                        label.split("/");
+
+                    const sortKey =
+                        parts.length === 3
+                            ? `${parts[2]}-${parts[1]}-${parts[0]}`
+                            : label;
+
+                    return {
+                        label,
+                        sortKey,
+                        value: counts[label]
+                    };
+                }
+            )
+            .sort(
+                function(a, b) {
+
+                    return a.sortKey.localeCompare(
+                        b.sortKey
+                    );
+                }
+            )
+            .slice(-14);
+
+
+    const labels =
+        entries.map(
+            function(entry) {
+
+                return entry.label;
+            }
+        );
+
+
+    const values =
+        entries.map(
+            function(entry) {
+
+                return entry.value;
+            }
+        );
+
+
+    charts.dashboard =
+        new Chart(
+            canvas,
+            {
+
+                type: "line",
+
+                data: {
+
+                    labels: labels,
+
+                    datasets: [
+
+                        {
+
+                            label:
+                                "Jumlah Pekerjaan",
+
+                            data: values,
+
+                            tension: 0.35,
+
+                            fill: true,
+
+                            backgroundColor:
+                                "rgba(15, 98, 181, 0.12)",
+
+                            borderColor:
+                                "#0F62B5",
+
+                            pointBackgroundColor:
+                                "#0F62B5",
+
+                            pointRadius: 3
+                        }
+
+                    ]
+                },
+
+                options: {
+
+                    responsive: true,
+
+                    maintainAspectRatio:
+                        false,
+
+                    plugins: {
+
+                        legend: {
+                            display: false
+                        }
+                    },
+
+                    scales: {
+
+                        y: {
+
+                            beginAtZero: true,
+
+                            ticks: {
+                                precision: 0
+                            }
+                        }
+                    }
+                }
+            }
+        );
 }
 
 
@@ -2286,14 +3067,61 @@ function renderDailyChart() {
     }
 
 
+    /* -----------------------------------------
+       BULAN YANG DIPILIH USER
+    ----------------------------------------- */
+
+    const monthInput =
+        $("dailyChartMonth");
+
+
+    const selectedMonth =
+        monthInput && monthInput.value
+            ? monthInput.value
+            : getLatestAvailableMonth();
+
+
+    /* -----------------------------------------
+       HITUNG DATA ASLI SESUAI BULAN TERPILIH
+    ----------------------------------------- */
+
     const counts = {};
 
 
     DATA.forEach(
         function(row) {
 
+            /*
+             * Hanya hitung baris yang benar-benar
+             * memiliki tanggal valid dari spreadsheet,
+             * dan berada pada bulan yang dipilih.
+             */
+
+            if (
+                !row.dateObject ||
+                !row.dateOnly ||
+                row.dateOnly === "-"
+            ) {
+                return;
+            }
+
+
+            const monthKey =
+                `${row.dateObject.getFullYear()}-${String(
+                    row.dateObject.getMonth() + 1
+                ).padStart(2, "0")}`;
+
+
+            if (
+                selectedMonth &&
+                monthKey !== selectedMonth
+            ) {
+                return;
+            }
+
+
             const date =
-                row.dateOnly || "-";
+                row.dateOnly;
 
 
             counts[date] =
@@ -2302,15 +3130,106 @@ function renderDailyChart() {
     );
 
 
-    const labels =
-        Object.keys(counts);
+    /*
+     * PENTING:
+     *
+     * Bangun label untuk SEMUA tanggal pada
+     * bulan yang dipilih (dari tanggal 1 sampai
+     * tanggal terakhir bulan tersebut), bukan
+     * hanya tanggal yang kebetulan punya data.
+     *
+     * Jika tidak, tanggal yang tidak memiliki
+     * pekerjaan pada spreadsheet tidak akan
+     * muncul sama sekali di grafik, sehingga
+     * grafik terlihat seolah datanya sedikit
+     * padahal bulan tersebut punya banyak hari.
+     */
+
+    let labels = [];
+
+
+    if (selectedMonth) {
+
+        const parts =
+            selectedMonth.split("-");
+
+        const year =
+            Number(parts[0]);
+
+        const month =
+            Number(parts[1]);
+
+
+        if (
+            !isNaN(year) &&
+            !isNaN(month)
+        ) {
+
+            const daysInMonth =
+                new Date(
+                    year,
+                    month,
+                    0
+                ).getDate();
+
+
+            for (
+                let day = 1;
+                day <= daysInMonth;
+                day++
+            ) {
+
+                const label =
+                    `${String(day).padStart(2, "0")}/` +
+                    `${String(month).padStart(2, "0")}/` +
+                    `${year}`;
+
+
+                labels.push(
+                    label
+                );
+            }
+        }
+    }
+
+
+    /*
+     * Fallback: jika bulan tidak diketahui,
+     * gunakan tanggal-tanggal yang ada pada
+     * data seperti sebelumnya.
+     */
+
+    if (!labels.length) {
+
+        labels =
+            Object.keys(counts).sort(
+                function(a, b) {
+
+                    const partsA =
+                        a.split("/");
+
+                    const partsB =
+                        b.split("/");
+
+                    const keyA =
+                        `${partsA[2]}-${partsA[1]}-${partsA[0]}`;
+
+                    const keyB =
+                        `${partsB[2]}-${partsB[1]}-${partsB[0]}`;
+
+                    return keyA.localeCompare(
+                        keyB
+                    );
+                }
+            );
+    }
 
 
     const values =
         labels.map(
             function(label) {
 
-                return counts[label];
+                return counts[label] || 0;
             }
         );
 
@@ -2333,7 +3252,12 @@ function renderDailyChart() {
                             label:
                                 "Jumlah Pekerjaan",
 
-                            data: values
+                            data: values,
+
+                            backgroundColor:
+                                "#0F62B5",
+
+                            borderRadius: 6
                         }
 
                     ]
@@ -2344,10 +3268,39 @@ function renderDailyChart() {
                     responsive: true,
 
                     maintainAspectRatio:
-                        false
+                        false,
+
+                    plugins: {
+
+                        legend: {
+                            display: false
+                        }
+                    },
+
+                    scales: {
+
+                        y: {
+
+                            beginAtZero: true,
+
+                            ticks: {
+                                precision: 0
+                            }
+                        }
+                    }
                 }
             }
         );
+
+
+    if (!labels.length && canvas.parentElement) {
+
+        console.info(
+            "Tidak ada data pekerjaan pada bulan " +
+            (selectedMonth || "-") +
+            "."
+        );
+    }
 }
 
 
@@ -2372,6 +3325,30 @@ function renderMonthlyChart() {
     }
 
 
+    /* -----------------------------------------
+       RENTANG BULAN YANG DIPILIH USER
+    ----------------------------------------- */
+
+    const fromInput =
+        $("monthlyChartFrom");
+
+    const toInput =
+        $("monthlyChartTo");
+
+    const availableMonths =
+        getAvailableMonths();
+
+    const selectedFrom =
+        (fromInput && fromInput.value) ||
+        availableMonths[0] ||
+        "";
+
+    const selectedTo =
+        (toInput && toInput.value) ||
+        availableMonths[availableMonths.length - 1] ||
+        "";
+
+
     const counts = {};
 
 
@@ -2387,6 +3364,26 @@ function renderMonthlyChart() {
                 `${row.dateObject.getFullYear()}-${String(
                     row.dateObject.getMonth() + 1
                 ).padStart(2, "0")}`;
+
+
+            /*
+             * Hanya hitung baris yang berada
+             * pada rentang bulan yang dipilih.
+             */
+
+            if (
+                selectedFrom &&
+                key < selectedFrom
+            ) {
+                return;
+            }
+
+            if (
+                selectedTo &&
+                key > selectedTo
+            ) {
+                return;
+            }
 
 
             counts[key] =
@@ -2430,7 +3427,15 @@ function renderMonthlyChart() {
 
                             data: values,
 
-                            tension: 0.3
+                            tension: 0.3,
+
+                            borderColor:
+                                "#0F62B5",
+
+                            backgroundColor:
+                                "rgba(15, 98, 181, 0.12)",
+
+                            fill: true
                         }
 
                     ]
@@ -2441,7 +3446,14 @@ function renderMonthlyChart() {
                     responsive: true,
 
                     maintainAspectRatio:
-                        false
+                        false,
+
+                    plugins: {
+
+                        legend: {
+                            display: false
+                        }
+                    }
                 }
             }
         );
@@ -2517,7 +3529,12 @@ function renderUnitChart() {
                             label:
                                 "Jumlah Pekerjaan",
 
-                            data: values
+                            data: values,
+
+                            backgroundColor:
+                                "#2E8CE0",
+
+                            borderRadius: 6
                         }
 
                     ]
@@ -2528,7 +3545,14 @@ function renderUnitChart() {
                     responsive: true,
 
                     maintainAspectRatio:
-                        false
+                        false,
+
+                    plugins: {
+
+                        legend: {
+                            display: false
+                        }
+                    }
                 }
             }
         );
@@ -2604,7 +3628,211 @@ function renderUp3Chart() {
                             label:
                                 "Jumlah Pekerjaan",
 
-                            data: values
+                            data: values,
+
+                            backgroundColor: [
+                                "#0F62B5",
+                                "#2E8CE0",
+                                "#7FB8EC",
+                                "#0A2A54",
+                                "#B8D9F7",
+                                "#5AA6E0"
+                            ]
+                        }
+
+                    ]
+                },
+
+                options: {
+
+                    responsive: true,
+
+                    maintainAspectRatio:
+                        false
+                }
+            }
+        );
+}
+
+
+/* =========================================================
+   GRAFIK ULP (DASHBOARD)
+========================================================= */
+
+function renderDashboardUnitChart() {
+
+    const canvas =
+        $("dashboardUnitChart");
+
+
+    if (!canvas) {
+        return;
+    }
+
+
+    if (charts.dashboardUnit) {
+
+        charts.dashboardUnit.destroy();
+    }
+
+
+    const counts = {};
+
+
+    DATA.forEach(
+        function(row) {
+
+            const unit =
+                row.ulp ||
+                "Tidak diketahui";
+
+
+            counts[unit] =
+                (counts[unit] || 0) + 1;
+        }
+    );
+
+
+    const labels =
+        Object.keys(counts);
+
+
+    const values =
+        labels.map(
+            function(label) {
+
+                return counts[label];
+            }
+        );
+
+
+    charts.dashboardUnit =
+        new Chart(
+            canvas,
+            {
+
+                type: "bar",
+
+                data: {
+
+                    labels: labels,
+
+                    datasets: [
+
+                        {
+
+                            label:
+                                "Jumlah Pekerjaan",
+
+                            data: values,
+
+                            backgroundColor:
+                                "#2E8CE0",
+
+                            borderRadius: 6
+                        }
+
+                    ]
+                },
+
+                options: {
+
+                    responsive: true,
+
+                    maintainAspectRatio:
+                        false,
+
+                    plugins: {
+
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            }
+        );
+}
+
+
+/* =========================================================
+   GRAFIK UP3 (DASHBOARD)
+========================================================= */
+
+function renderDashboardUp3Chart() {
+
+    const canvas =
+        $("dashboardUp3Chart");
+
+
+    if (!canvas) {
+        return;
+    }
+
+
+    if (charts.dashboardUp3) {
+
+        charts.dashboardUp3.destroy();
+    }
+
+
+    const counts = {};
+
+
+    DATA.forEach(
+        function(row) {
+
+            const unit =
+                row.up3 ||
+                "Tidak diketahui";
+
+
+            counts[unit] =
+                (counts[unit] || 0) + 1;
+        }
+    );
+
+
+    const labels =
+        Object.keys(counts);
+
+
+    const values =
+        labels.map(
+            function(label) {
+
+                return counts[label];
+            }
+        );
+
+
+    charts.dashboardUp3 =
+        new Chart(
+            canvas,
+            {
+
+                type: "doughnut",
+
+                data: {
+
+                    labels: labels,
+
+                    datasets: [
+
+                        {
+
+                            label:
+                                "Jumlah Pekerjaan",
+
+                            data: values,
+
+                            backgroundColor: [
+                                "#0F62B5",
+                                "#2E8CE0",
+                                "#7FB8EC",
+                                "#0A2A54",
+                                "#B8D9F7",
+                                "#5AA6E0"
+                            ]
                         }
 
                     ]
@@ -2691,7 +3919,12 @@ function renderJobChart() {
                             label:
                                 "Jumlah Pekerjaan",
 
-                            data: values
+                            data: values,
+
+                            backgroundColor:
+                                "#0A2A54",
+
+                            borderRadius: 6
                         }
 
                     ]
@@ -2702,7 +3935,14 @@ function renderJobChart() {
                     responsive: true,
 
                     maintainAspectRatio:
-                        false
+                        false,
+
+                    plugins: {
+
+                        legend: {
+                            display: false
+                        }
+                    }
                 }
             }
         );
@@ -2912,7 +4152,13 @@ document.addEventListener(
                     tbody.innerHTML = "";
 
 
-                    filtered.forEach(
+                    const sortedFiltered =
+                        getSortedByDateDesc(
+                            filtered
+                        );
+
+
+                    sortedFiltered.forEach(
                         function(row, index) {
 
                             const tr =
@@ -3267,6 +4513,95 @@ document.addEventListener(
 
 
         /* -----------------------------------------
+           FILTER GRAFIK — PEKERJAAN PER HARI
+        ----------------------------------------- */
+
+        const dailyChartMonth =
+            $("dailyChartMonth");
+
+
+        if (dailyChartMonth) {
+
+            dailyChartMonth.addEventListener(
+                "change",
+                function() {
+
+                    renderDailyChart();
+                }
+            );
+        }
+
+
+        /* -----------------------------------------
+           FILTER GRAFIK — PEKERJAAN PER BULAN
+        ----------------------------------------- */
+
+        const monthlyChartFrom =
+            $("monthlyChartFrom");
+
+        const monthlyChartTo =
+            $("monthlyChartTo");
+
+
+        if (monthlyChartFrom) {
+
+            monthlyChartFrom.addEventListener(
+                "change",
+                function() {
+
+                    /*
+                     * Jaga agar "Dari" tidak
+                     * melewati "Sampai".
+                     */
+
+                    if (
+                        monthlyChartTo &&
+                        monthlyChartTo.value &&
+                        monthlyChartFrom.value >
+                            monthlyChartTo.value
+                    ) {
+
+                        monthlyChartTo.value =
+                            monthlyChartFrom.value;
+                    }
+
+
+                    renderMonthlyChart();
+                }
+            );
+        }
+
+
+        if (monthlyChartTo) {
+
+            monthlyChartTo.addEventListener(
+                "change",
+                function() {
+
+                    /*
+                     * Jaga agar "Sampai" tidak
+                     * lebih awal dari "Dari".
+                     */
+
+                    if (
+                        monthlyChartFrom &&
+                        monthlyChartFrom.value &&
+                        monthlyChartTo.value <
+                            monthlyChartFrom.value
+                    ) {
+
+                        monthlyChartFrom.value =
+                            monthlyChartTo.value;
+                    }
+
+
+                    renderMonthlyChart();
+                }
+            );
+        }
+
+
+        /* -----------------------------------------
            REFRESH
         ----------------------------------------- */
 
@@ -3298,6 +4633,9 @@ document.addEventListener(
                     await loadFromURL(
                         url
                     );
+
+
+                    await loadCctvSummary();
 
 
                     refreshBtn.disabled =
@@ -3341,6 +4679,9 @@ document.addEventListener(
         await loadFromURL(
             csvURL
         );
+
+
+        await loadCctvSummary();
 
 
         console.log(
