@@ -37,7 +37,7 @@
         <div class="brand">
 
             <div class="brand-logo">
-                PLN
+                <img src="LogoPLN.jpg" alt="Logo PLN" class="brand-logo-img">
             </div>
 
             <div class="brand-text">
@@ -276,7 +276,7 @@
                     <div>
 
                         <span>
-                            Total Data
+                            Total Laporan
                         </span>
 
                         <strong id="totalData">
@@ -345,6 +345,108 @@
                         <strong id="totalUnit">
                             0
                         </strong>
+
+                    </div>
+
+                </div>
+
+
+                <div class="kpi-card">
+
+                    <div class="kpi-icon">
+                        ✓
+                    </div>
+
+                    <div>
+
+                        <span>
+                            CCTV ON
+                        </span>
+
+                        <strong id="cctvOn">
+                            0
+                        </strong>
+
+                    </div>
+
+                </div>
+
+
+                <div class="kpi-card">
+
+                    <div class="kpi-icon">
+                        ✕
+                    </div>
+
+                    <div>
+
+                        <span>
+                            CCTV OFF
+                        </span>
+
+                        <strong id="cctvOff">
+                            0
+                        </strong>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <!-- GRAFIK BATANG & DONAT DASHBOARD -->
+
+            <div class="chart-grid">
+
+                <div class="panel chart-box">
+
+                    <div class="panel-header">
+
+                        <div>
+
+                            <h2>
+                                Pekerjaan per ULP
+                            </h2>
+
+                            <p>
+                                Distribusi pekerjaan berdasarkan ULP.
+                            </p>
+
+                        </div>
+
+                    </div>
+
+                    <div class="chart-container">
+
+                        <canvas id="dashboardUnitChart"></canvas>
+
+                    </div>
+
+                </div>
+
+
+                <div class="panel chart-box">
+
+                    <div class="panel-header">
+
+                        <div>
+
+                            <h2>
+                                Pekerjaan per UP3
+                            </h2>
+
+                            <p>
+                                Distribusi pekerjaan berdasarkan UP3.
+                            </p>
+
+                        </div>
+
+                    </div>
+
+                    <div class="chart-container chart-doughnut">
+
+                        <canvas id="dashboardUp3Chart"></canvas>
 
                     </div>
 
@@ -673,8 +775,22 @@
                             </h2>
 
                             <p>
-                                Jumlah pekerjaan berdasarkan tanggal.
+                                Jumlah pekerjaan berdasarkan tanggal
+                                pada bulan yang dipilih.
                             </p>
+
+                        </div>
+
+                        <div class="chart-filter">
+
+                            <label for="dailyChartMonth">
+                                Bulan
+                            </label>
+
+                            <input
+                                type="month"
+                                id="dailyChartMonth"
+                            >
 
                         </div>
 
@@ -702,8 +818,31 @@
                             </h2>
 
                             <p>
-                                Jumlah pekerjaan berdasarkan bulan.
+                                Jumlah pekerjaan berdasarkan bulan
+                                pada rentang yang dipilih.
                             </p>
+
+                        </div>
+
+                        <div class="chart-filter chart-filter-range">
+
+                            <label for="monthlyChartFrom">
+                                Dari
+                            </label>
+
+                            <input
+                                type="month"
+                                id="monthlyChartFrom"
+                            >
+
+                            <label for="monthlyChartTo">
+                                Sampai
+                            </label>
+
+                            <input
+                                type="month"
+                                id="monthlyChartTo"
+                            >
 
                         </div>
 
